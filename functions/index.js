@@ -9,14 +9,27 @@ admin.initializeApp({
 const db = admin.firestore();
 
 exports.sendChatMessageNotification = onDocumentCreated(
-  'chats/{chatId}/messages/{messageId}',
+  "chats/{chatId}/messages/{messageId}",
   async (event) => {
     const chatId = event.params.chatId;
-    const senderId = event.params.senderId
-    const text = event.params.text
 
     try {
-      const chatDoc = await db.collection('chats').doc(chatId).get();
+      // Retrieve triggered document directly
+      const triggeredDoc = await db
+        .collection("chats")
+        .doc(chatId)
+        .collection("messages")
+        .doc(event.params.messageId)
+        .get();
+
+      const triggeredData = triggeredDoc.data();
+      console.log("[DEBUG] Triggered document data:", triggeredData);
+
+      const senderId = triggeredData?.senderId; // Extract senderId explicitly
+      const text = triggeredData?.text;
+
+      // Retrieve chat participants
+      const chatDoc = await db.collection("chats").doc(chatId).get();
       if (!chatDoc.exists) {
         console.log(`Chat document ${chatId} not found.`);
         return;
@@ -24,11 +37,37 @@ exports.sendChatMessageNotification = onDocumentCreated(
 
       const participants = chatDoc.data().participants || [];
       const tokens = [];
+      const unreadCounts = {};
 
       for (const userId of participants) {
         if (userId !== senderId) {
-          const userDoc = await db.collection('users').doc(userId).get();
+          const userDoc = await db.collection("users").doc(userId).get();
           const userData = userDoc.data();
+
+          const friendDoc = await db
+          .collection("users")
+          .doc(userId)
+          .collection("friends")
+          .doc(senderId)
+          .get();
+
+          const lastViewedTimestamp = friendDoc.data()?.lastViewedTimestamp;
+
+          if (!lastViewedTimestamp) {
+            console.log(`[DEBUG] No lastViewedTimestamp found for user ${userId}`)
+            unreadCounts[userId] = 0
+            continue;
+          }
+
+          const unreadMessages = await db
+          .collection("chats")
+          .doc(chatId)
+          .collection("messages")
+          .where("timestamp", ">", lastViewedTimestamp)
+          .get();
+
+          unreadCounts[userId] = unreadMessages.size;
+         
           if (userData && userData.notifyImmediately && userData.fcmToken) {
             tokens.push(userData.fcmToken);
           }
@@ -36,35 +75,41 @@ exports.sendChatMessageNotification = onDocumentCreated(
       }
 
       if (tokens.length === 0) {
-        console.log('[DEBUG] No valid FCM tokens found for chat message notification.');
+        console.log("[DEBUG] No valid FCM tokens found for chat message notification.");
         return;
       }
 
+      const totalBadgeCount = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
+
       const payload = {
         notification: {
-          title: 'New Message',
-          body: text || 'You have a new message',
+          title: "New Message",
+          body: text || "You have a new message",
         },
         data: {
           chatId: chatId,
           senderId: senderId,
         },
+        apns: {
+          payload: {
+            aps: {
+              badge: totalBadgeCount
+            },
+          },
+        },
       };
 
-      console.log("[DEBUG] Payload being sent:", {
-        notification: payload.notification,
-        data: payload.data,
-    });
-    
+      console.log("[DEBUG] Payload being sent:", payload);
+
       await admin.messaging().sendEachForMulticast({
         tokens: tokens,
         notification: payload.notification,
         data: payload.data,
       });
 
-      console.log('[DEBUG] Chat message notifications sent successfully');
+      console.log("[DEBUG] Chat message notifications sent successfully");
     } catch (error) {
-      console.error('Error in sendChatMessageNotification:', error);
+      console.error("Error in sendChatMessageNotification:", error);
     }
   }
 );
