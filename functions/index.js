@@ -65,14 +65,16 @@ exports.sendChatMessageNotification = onDocumentCreated(
           .get();
 
           unreadCounts[userId] = unreadMessages.size;
-
-          const userDoc = await db.collection("users").doc(userId).get();
-          const userData = userDoc.data();
-         
-          if (userData && userData.notifyImmediately && userData.fcmToken) {
-            tokens.push(userData.fcmToken);
-          }
         }
+      }
+
+      const userDoc = await db.collection("users").doc(userId).get();
+      const userData = userDoc.data();
+
+      console.log("Total badge count: ", totalBadgeCount.toString())
+      
+      if (userData && userData.notifyImmediately && userData.fcmToken) {
+        tokens.push(userData.fcmToken);
       }
 
       if (tokens.length === 0) {
@@ -80,8 +82,10 @@ exports.sendChatMessageNotification = onDocumentCreated(
         return;
       }
 
-      const totalBadgeCount = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
-
+      const totalBadgeCount = Object.values(unreadCounts)
+      .filter((count) => typeof count === "number")
+      .reduce((a, b) => a + b, 0);
+    
       const payload = {
         notification: {
           title: "New Message",
@@ -105,7 +109,7 @@ exports.sendChatMessageNotification = onDocumentCreated(
         },
       };
 
-      console.log("[DEBUG] Payload being sent:", payload);
+      console.log("[DEBUG] Payload being sent:", JSON.stringify(payload));
 
       await admin.messaging().sendEachForMulticast({
         tokens: tokens,
