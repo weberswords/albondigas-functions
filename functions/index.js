@@ -41,9 +41,7 @@ exports.sendChatMessageNotification = onDocumentCreated(
 
       for (const userId of participants) {
         if (userId !== senderId) {
-          const userDoc = await db.collection("users").doc(userId).get();
-          const userData = userDoc.data();
-
+          
           const friendDoc = await db
           .collection("users")
           .doc(userId)
@@ -67,6 +65,9 @@ exports.sendChatMessageNotification = onDocumentCreated(
           .get();
 
           unreadCounts[userId] = unreadMessages.size;
+
+          const userDoc = await db.collection("users").doc(userId).get();
+          const userData = userDoc.data();
          
           if (userData && userData.notifyImmediately && userData.fcmToken) {
             tokens.push(userData.fcmToken);
@@ -89,11 +90,16 @@ exports.sendChatMessageNotification = onDocumentCreated(
         data: {
           chatId: chatId,
           senderId: senderId,
+          badge: totalBadgeCount.toString(),
         },
         apns: {
           payload: {
             aps: {
-              badge: totalBadgeCount
+              alert: {
+                title: "New Message!",
+                body: text || "You have a new message.",
+              },
+              badge: totalBadgeCount,
             },
           },
         },
