@@ -41,6 +41,14 @@ exports.sendChatMessageNotification = onDocumentCreated(
 
       for (const userId of participants) {
         if (userId !== senderId) {
+          try {
+            const userDoc = await db.collection("users").doc(userId).get();
+            const userData = userDoc.data();
+
+            if (!userData || !userData.notifyImmediately || !userData.fcmToken) {
+              console.log(`[DEBUG] Skipping user ${userId} due to missing FCM token or notification preference.`);
+              continue;
+            }
           
           const friendDoc = await db
           .collection("users")
@@ -65,17 +73,15 @@ exports.sendChatMessageNotification = onDocumentCreated(
           .get();
 
           unreadCounts[userId] = unreadMessages.size;
+
+          tokens.push(userData.fcmToken);
+        } catch (error) {
+          console.error(`[ERROR] Failed to process user ${userId}: `, error);
         }
       }
-
-      const userDoc = await db.collection("users").doc(userId).get();
-      const userData = userDoc.data();
+    }
 
       console.log("Total badge count: ", totalBadgeCount.toString())
-      
-      if (userData && userData.notifyImmediately && userData.fcmToken) {
-        tokens.push(userData.fcmToken);
-      }
 
       if (tokens.length === 0) {
         console.log("[DEBUG] No valid FCM tokens found for chat message notification.");
