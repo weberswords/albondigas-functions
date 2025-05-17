@@ -11,47 +11,49 @@ return {
   maxInstances: 10,
   timeoutSeconds: 60
 }, async (request) => {
-  // Security: Check if user is authenticated
+  // Security check remains the same
   if (!request.auth) {
-    throw new HttpsError('Unauthenticated');
+    throw new HttpsError('unauthenticated', 'You must be logged in');
   }
 
   const { friendshipId } = request.data;
   const acceptingUserId = request.auth.uid;
 
   if (!friendshipId) {
-    throw new HttpsError('Friendship ID is required');
+    throw new HttpsError('invalid-argument', 'Friendship ID is required');
   }
 
-  console.log(`Accept request called by ${acceptingUserId} for friendship ${friendshipId}`);
+  console.log(`🔔 FRIEND ACCEPT: User ${acceptingUserId} accepting friendship ${friendshipId}`);
 
   try {
-    // Use a transaction to ensure data consistency
     return await db.runTransaction(async (transaction) => {
-      // Get the friendship document
+      // STEP 1: GATHER ALL DOCUMENT REFERENCES WE'LL NEED
+      console.log(`📚 Getting document references for friendship ${friendshipId}`);
       const friendshipRef = db.collection('friendships').doc(friendshipId);
+      
+      // STEP 2: READ ALL DOCUMENTS FIRST
+      console.log(`📖 Reading friendship document ${friendshipId}`);
       const friendshipDoc = await transaction.get(friendshipRef);
-
+      
+      // STEP 3: VALIDATE THE DATA
       if (!friendshipDoc.exists) {
-        console.error(`Friendship ${friendshipId} not found`);
+        console.error(`❌ Friendship ${friendshipId} not found`);
         return { success: false, error: 'Friend request not found' };
       }
 
       const friendshipData = friendshipDoc.data();
-      console.log(`Friendship data: ${JSON.stringify(friendshipData)}`);
+      console.log(`ℹ️ Friendship data: ${JSON.stringify(friendshipData)}`);
       
-      // Verify status
       if (friendshipData.status !== 'pending') {
-        console.log(`Friendship status is ${friendshipData.status}, not pending`);
+        console.log(`⚠️ Friendship status is ${friendshipData.status}, not pending`);
         return { success: false, error: 'This request is no longer pending' };
       }
 
-      // Verify user is allowed to accept
       if (
         friendshipData.user1Id !== acceptingUserId &&
         friendshipData.user2Id !== acceptingUserId
       ) {
-        console.error(`User ${acceptingUserId} not authorized for friendship ${friendshipId}`);
+        console.error(`🚫 User ${acceptingUserId} not authorized for friendship ${friendshipId}`);
         return { success: false, error: 'You do not have permission to accept this request' };
       }
 
@@ -60,89 +62,96 @@ return {
         ? friendshipData.user2Id
         : friendshipData.user1Id;
 
-      console.log(`Accepting friendship between ${acceptingUserId} and ${otherUserId}`);
+      console.log(`🤝 Accepting friendship between ${acceptingUserId} and ${otherUserId}`);
+      
+      // Set up all references
+      const user1FriendshipRef = db
+        .collection('userFriendships')
+        .doc(acceptingUserId)
+        .collection('friends')
+        .doc(otherUserId);
 
-      try {
-        // 1. Update friendship document
-        transaction.update(friendshipRef, {
+      const user2FriendshipRef = db
+        .collection('userFriendships')
+        .doc(otherUserId)
+        .collection('friends')
+        .doc(acceptingUserId);
+        
+      const chatId = [acceptingUserId, otherUserId].sort().join('_');
+      const chatRef = db.collection('chats').doc(chatId);
+      
+      console.log(`📖 Reading user friendship documents and chat document`);
+      // Read all documents before any writes
+      const user1Doc = await transaction.get(user1FriendshipRef);
+      const user2Doc = await transaction.get(user2FriendshipRef);
+      const chatDoc = await transaction.get(chatRef);
+
+      console.log(`✏️ Starting write operations in transaction`);
+      // STEP 4: NOW PERFORM ALL WRITES, AFTER ALL READS ARE COMPLETE
+      
+      // 1. Update friendship document
+      console.log(`✏️ Updating friendship document to 'accepted'`);
+      transaction.update(friendshipRef, {
+        status: 'accepted',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      // 2. Update user1 friendship record
+      if (user1Doc.exists) {
+        console.log(`✏️ Updating existing friendship record for ${acceptingUserId}`);
+        transaction.update(user1FriendshipRef, {
           status: 'accepted',
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
-
-        // 2. Update user friendship records
-        const user1FriendshipRef = db
-          .collection('userFriendships')
-          .doc(acceptingUserId)
-          .collection('friends')
-          .doc(otherUserId);
-
-        const user2FriendshipRef = db
-          .collection('userFriendships')
-          .doc(otherUserId)
-          .collection('friends')
-          .doc(acceptingUserId);
-
-        // Check if user friendship documents exist first
-        const user1Doc = await transaction.get(user1FriendshipRef);
-        const user2Doc = await transaction.get(user2FriendshipRef);
-
-        if (user1Doc.exists) {
-          transaction.update(user1FriendshipRef, {
-            status: 'accepted',
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-          });
-        } else {
-          transaction.set(user1FriendshipRef, {
-            friendshipId: friendshipId,
-            status: 'accepted',
-            role: friendshipData.user1Id === acceptingUserId ? 'recipient' : 'initiator',
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
-          });
-        }
-
-        if (user2Doc.exists) {
-          transaction.update(user2FriendshipRef, {
-            status: 'accepted',
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-          });
-        } else {
-          transaction.set(user2FriendshipRef, {
-            friendshipId: friendshipId,
-            status: 'accepted',
-            role: friendshipData.user2Id === acceptingUserId ? 'recipient' : 'initiator',
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
-          });
-        }
-
-        // Create a chat room for the two users
-        const chatId = [acceptingUserId, otherUserId].sort().join('_');
-        
-        const chatRef = db.collection('chats').doc(chatId);
-        const chatDoc = await transaction.get(chatRef);
-        
-        if (!chatDoc.exists) {
-          transaction.set(chatRef, {
-            id: chatId,
-            participants: [acceptingUserId, otherUserId],
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            lastMessageAt: admin.firestore.FieldValue.serverTimestamp(),
-            expirationDays: null // No expiration by default
-          });
-        }
-
-        console.log(`Friendship accepted successfully`);
-        return { success: true };
-      } catch (innerError) {
-        console.error('Error in transaction operations:', innerError);
-        return { success: false, error: innerError.message };
+      } else {
+        console.log(`✏️ Creating new friendship record for ${acceptingUserId}`);
+        transaction.set(user1FriendshipRef, {
+          friendshipId: friendshipId,
+          status: 'accepted',
+          role: friendshipData.user1Id === acceptingUserId ? 'recipient' : 'initiator',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
       }
+
+      // 3. Update user2 friendship record
+      if (user2Doc.exists) {
+        console.log(`✏️ Updating existing friendship record for ${otherUserId}`);
+        transaction.update(user2FriendshipRef, {
+          status: 'accepted',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      } else {
+        console.log(`✏️ Creating new friendship record for ${otherUserId}`);
+        transaction.set(user2FriendshipRef, {
+          friendshipId: friendshipId,
+          status: 'accepted',
+          role: friendshipData.user2Id === acceptingUserId ? 'recipient' : 'initiator',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      }
+
+      // 4. Create chat if it doesn't exist
+      if (!chatDoc.exists) {
+        console.log(`✏️ Creating new chat room with ID ${chatId}`);
+        transaction.set(chatRef, {
+          id: chatId,
+          participants: [acceptingUserId, otherUserId],
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastMessageAt: admin.firestore.FieldValue.serverTimestamp(),
+          expirationDays: null // No expiration by default
+        });
+      } else {
+        console.log(`ℹ️ Chat room ${chatId} already exists, skipping creation`);
+      }
+
+      console.log(`✅ Friendship accepted successfully`);
+      return { success: true };
     });
   } catch (error) {
-    console.error('Error accepting friend request:', error);
-    // Return a success message even if there was an error, since the UI shows it worked
-    return { success: true, warning: "Operation may have partially completed" };
+    console.error(`❌ Error accepting friend request: ${error}`);
+    return { success: false, error: error.message };
   }
 }),
 
