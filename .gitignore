@@ -68,3 +68,4 @@ node_modules/
 # dataconnect generated files
 .dataconnect
 firebase_admin.json
+.DS_Store
