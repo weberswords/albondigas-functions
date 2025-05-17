@@ -443,6 +443,268 @@ blockUser: onCall({
       error.message
     );
   }
-  })
+  }),
+  // check friendship status
+  checkFriendshipStatus: onCall({
+  region: 'us-central1',
+  maxInstances: 10,
+  timeoutSeconds: 60
+}, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'You must be logged in');
+  }
+
+  const { friendId } = request.data;
+  const userId = request.auth.uid;
+
+  if (!friendId) {
+    throw new HttpsError('invalid-argument', 'Friend ID is required');
+  }
+
+  console.log(`🔍 CHECKING: Friendship status between ${userId} and ${friendId}`);
+
+  try {
+    // Get all relevant documents
+    const friendshipId = [userId, friendId].sort().join('_');
+    const friendshipRef = db.collection('friendships').doc(friendshipId);
+    
+    const user1FriendshipRef = db
+      .collection('userFriendships')
+      .doc(userId)
+      .collection('friends')
+      .doc(friendId);
+
+    const user2FriendshipRef = db
+      .collection('userFriendships')
+      .doc(friendId)
+      .collection('friends')
+      .doc(userId);
+      
+    const chatId = [userId, friendId].sort().join('_');
+    const chatRef = db.collection('chats').doc(chatId);
+    
+    // Get all documents
+    const [friendshipDoc, user1Doc, user2Doc, chatDoc] = await Promise.all([
+      friendshipRef.get(),
+      user1FriendshipRef.get(),
+      user2FriendshipRef.get(),
+      chatRef.get()
+    ]);
+    
+    // Build status report
+    const status = {
+      friendshipExists: friendshipDoc.exists,
+      friendshipStatus: friendshipDoc.exists ? friendshipDoc.data().status : null,
+      user1RecordExists: user1Doc.exists,
+      user1Status: user1Doc.exists ? user1Doc.data().status : null,
+      user2RecordExists: user2Doc.exists,
+      user2Status: user2Doc.exists ? user2Doc.data().status : null,
+      chatExists: chatDoc.exists,
+      isConsistent: false
+    };
+    
+    // Check consistency
+    if (friendshipDoc.exists) {
+      const mainStatus = friendshipDoc.data().status;
+      
+      if (mainStatus === 'accepted') {
+        // For accepted friendships, both user records and chat should exist
+        status.isConsistent = 
+          user1Doc.exists && 
+          user1Doc.data().status === 'accepted' &&
+          user2Doc.exists && 
+          user2Doc.data().status === 'accepted' &&
+          chatDoc.exists;
+      } else if (mainStatus === 'pending') {
+        // For pending friendships, both user records should exist with correct roles
+        status.isConsistent = 
+          user1Doc.exists && 
+          user2Doc.exists;
+          
+        // Add role information
+        if (user1Doc.exists) {
+          status.user1Role = user1Doc.data().role;
+        }
+        
+        if (user2Doc.exists) {
+          status.user2Role = user2Doc.data().role;
+        }
+      }
+    }
+    
+    console.log(`✅ Friendship status check completed: ${JSON.stringify(status)}`);
+    return status;
+  } catch (error) {
+    console.error(`❌ Error checking friendship status: ${error}`);
+    return { error: error.message };
+  }
+}),
+
+  // Repair friendship
+  repairFriendshipState: onCall({
+  region: 'us-central1',
+  maxInstances: 10,
+  timeoutSeconds: 60
+}, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'You must be logged in');
+  }
+
+  const { friendId } = request.data;
+  const userId = request.auth.uid;
+
+  if (!friendId) {
+    throw new HttpsError('invalid-argument', 'Friend ID is required');
+  }
+
+  console.log(`🔧 REPAIR: Repairing friendship between ${userId} and ${friendId}`);
+
+  try {
+    // Check if the friendship exists in the main collection
+    const friendshipId = [userId, friendId].sort().join('_');
+    const friendshipRef = db.collection('friendships').doc(friendshipId);
+    
+    const friendshipDoc = await friendshipRef.get();
+    if (!friendshipDoc.exists) {
+      console.log(`❌ No friendship found with ID ${friendshipId}`);
+      return { success: false, error: 'No friendship found' };
+    }
+    
+    const friendshipData = friendshipDoc.data();
+    console.log(`ℹ️ Friendship data: ${JSON.stringify(friendshipData)}`);
+    
+    // Run a transaction to repair all related documents
+    return await db.runTransaction(async (transaction) => {
+      // Read all documents first
+      const user1FriendshipRef = db
+        .collection('userFriendships')
+        .doc(userId)
+        .collection('friends')
+        .doc(friendId);
+
+      const user2FriendshipRef = db
+        .collection('userFriendships')
+        .doc(friendId)
+        .collection('friends')
+        .doc(userId);
+        
+      const chatId = [userId, friendId].sort().join('_');
+      const chatRef = db.collection('chats').doc(chatId);
+      
+      // Get all documents
+      const user1Doc = await transaction.get(user1FriendshipRef);
+      const user2Doc = await transaction.get(user2FriendshipRef);
+      const chatDoc = await transaction.get(chatRef);
+      
+      console.log(`ℹ️ User1 friendship exists: ${user1Doc.exists}`);
+      console.log(`ℹ️ User2 friendship exists: ${user2Doc.exists}`);
+      console.log(`ℹ️ Chat exists: ${chatDoc.exists}`);
+      
+      // Determine what needs to be repaired based on friendship status
+      if (friendshipData.status === 'accepted') {
+        console.log(`🔧 Repairing accepted friendship ${friendshipId}`);
+        
+        // Ensure user friendship records exist and are marked as accepted
+        if (!user1Doc.exists) {
+          console.log(`✏️ Creating missing friendship record for ${userId}`);
+          transaction.set(user1FriendshipRef, {
+            friendshipId: friendshipId,
+            status: 'accepted',
+            role: friendshipData.user1Id === userId ? 'recipient' : 'initiator',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            createdAt: friendshipData.createdAt || admin.firestore.FieldValue.serverTimestamp()
+          });
+        } else if (user1Doc.data().status !== 'accepted') {
+          console.log(`✏️ Updating friendship record for ${userId} to accepted`);
+          transaction.update(user1FriendshipRef, {
+            status: 'accepted',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+        }
+        
+        if (!user2Doc.exists) {
+          console.log(`✏️ Creating missing friendship record for ${friendId}`);
+          transaction.set(user2FriendshipRef, {
+            friendshipId: friendshipId,
+            status: 'accepted',
+            role: friendshipData.user2Id === friendId ? 'recipient' : 'initiator',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            createdAt: friendshipData.createdAt || admin.firestore.FieldValue.serverTimestamp()
+          });
+        } else if (user2Doc.data().status !== 'accepted') {
+          console.log(`✏️ Updating friendship record for ${friendId} to accepted`);
+          transaction.update(user2FriendshipRef, {
+            status: 'accepted',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+        }
+        
+        // Ensure chat exists
+        if (!chatDoc.exists) {
+          console.log(`✏️ Creating missing chat room with ID ${chatId}`);
+          transaction.set(chatRef, {
+            id: chatId,
+            participants: [userId, friendId],
+            createdAt: friendshipData.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+            lastMessageAt: friendshipData.updatedAt || admin.firestore.FieldValue.serverTimestamp(),
+            expirationDays: null
+          });
+        }
+      } else if (friendshipData.status === 'pending') {
+        // Pending friendship doesn't need a chat but should have proper records
+        console.log(`🔧 Repairing pending friendship ${friendshipId}`);
+        
+        const initiatorId = friendshipData.initiatorId || friendshipData.user1Id;
+        const recipientId = initiatorId === userId ? friendId : userId;
+        
+        // Update initiator's record
+        const initiatorRef = db
+          .collection('userFriendships')
+          .doc(initiatorId)
+          .collection('friends')
+          .doc(recipientId);
+          
+        const initiatorDoc = initiatorId === userId ? user1Doc : user2Doc;
+        
+        if (!initiatorDoc.exists) {
+          console.log(`✏️ Creating missing initiator record for ${initiatorId}`);
+          transaction.set(initiatorRef, {
+            friendshipId: friendshipId,
+            status: 'pending',
+            role: 'initiator',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            createdAt: friendshipData.createdAt || admin.firestore.FieldValue.serverTimestamp()
+          });
+        }
+        
+        // Update recipient's record
+        const recipientRef = db
+          .collection('userFriendships')
+          .doc(recipientId)
+          .collection('friends')
+          .doc(initiatorId);
+          
+        const recipientDoc = recipientId === userId ? user1Doc : user2Doc;
+        
+        if (!recipientDoc.exists) {
+          console.log(`✏️ Creating missing recipient record for ${recipientId}`);
+          transaction.set(recipientRef, {
+            friendshipId: friendshipId,
+            status: 'pending',
+            role: 'recipient',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            createdAt: friendshipData.createdAt || admin.firestore.FieldValue.serverTimestamp()
+          });
+        }
+      }
+      
+      console.log(`✅ Friendship repair completed successfully`);
+      return { success: true, status: friendshipData.status };
+    });
+  } catch (error) {
+    console.error(`❌ Error repairing friendship: ${error}`);
+    return { success: false, error: error.message };
+  }
+})
 };
 };

@@ -23,6 +23,8 @@ exports.acceptFriendRequest = friendFunctions.acceptFriendRequest;
 exports.rejectFriendRequest = friendFunctions.rejectFriendRequest;
 exports.unfriend = friendFunctions.unfriend;
 exports.blockUser = friendFunctions.blockUser;
+exports.checkFriendshipStatus = friendFunctions.checkFriendshipStatus
+exports.repairFriendshipState = friendFunctions.repairFriendshipState
 
 exports.sendChatMessageNotification = notificationFunctions.sendChatMessageNotification;
 exports.sendFriendRequestNotification = notificationFunctions.sendFriendRequestNotification;
