@@ -2,10 +2,12 @@ const admin = require('firebase-admin');
 
 // Import service account
 const serviceAccount = require('./firebase_admin.json');
+const account = require('./account.js');
 
 // Initialize admin
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
+  storageBucket: "gs://albondigas-8cfd9.appspot.com"
 });
 
 // Initialize Firestore ONCE
@@ -17,6 +19,7 @@ const firebaseHelper = { admin, db };
 // Import function modules with the helper
 const friendFunctions = require('./friends.js')(firebaseHelper);
 const notificationFunctions = require('./notifications.js')(firebaseHelper);
+const accountFunctions = require('./account.js')(firebaseHelper);
 
 // Export all functions
 exports.acceptFriendRequest = friendFunctions.acceptFriendRequest;
@@ -28,3 +31,6 @@ exports.repairFriendshipState = friendFunctions.repairFriendshipState
 
 exports.sendChatMessageNotification = notificationFunctions.sendChatMessageNotification;
 exports.sendFriendRequestNotification = notificationFunctions.sendFriendRequestNotification;
+
+exports.deleteAccountImmediately = accountFunctions.deleteAccountImmediately;
+exports.scheduleAccountDeletion = accountFunctions.scheduleAccountDeletion;
