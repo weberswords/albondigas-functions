@@ -20,6 +20,10 @@ const firebaseHelper = { admin, db };
 const friendFunctions = require('./friends.js')(firebaseHelper);
 const notificationFunctions = require('./notifications.js')(firebaseHelper);
 const accountFunctions = require('./account.js')(firebaseHelper);
+const videoFunctions = require('./videos.js')(firebaseHelper);
+const verificationFunctions = require('./verification.js')(firebaseHelper);
+
+
 
 // Export all functions
 exports.acceptFriendRequest = friendFunctions.acceptFriendRequest;
@@ -28,9 +32,20 @@ exports.unfriend = friendFunctions.unfriend;
 exports.blockUser = friendFunctions.blockUser;
 exports.checkFriendshipStatus = friendFunctions.checkFriendshipStatus
 exports.repairFriendshipState = friendFunctions.repairFriendshipState
+exports.unblockUser = friendFunctions.unblockUser;
+
 
 exports.sendChatMessageNotification = notificationFunctions.sendChatMessageNotification;
 exports.sendFriendRequestNotification = notificationFunctions.sendFriendRequestNotification;
 
 exports.deleteAccountImmediately = accountFunctions.deleteAccountImmediately;
 exports.scheduleAccountDeletion = accountFunctions.scheduleAccountDeletion;
+
+exports.cleanupExpiredVideos = videoFunctions.cleanupExpiredVideos;
+exports.manualVideoCleanup = videoFunctions.manualVideoCleanup;
+
+exports.sendVerificationCode = verificationFunctions.sendVerificationCode;
+exports.verifyCode = verificationFunctions.verifyCode;
+exports.sendPasswordResetCode = verificationFunctions.sendPasswordResetCode;
+exports.verifyPasswordResetCode = verificationFunctions.verifyPasswordResetCode;
+exports.resetPasswordWithCode = verificationFunctions.resetPasswordWithCode;
