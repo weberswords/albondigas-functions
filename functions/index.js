@@ -26,6 +26,7 @@ const verificationFunctions = require('./verification.js')(firebaseHelper);
 
 
 // Export all functions
+exports.sendFriendRequest = friendFunctions.sendFriendRequest;
 exports.acceptFriendRequest = friendFunctions.acceptFriendRequest;
 exports.rejectFriendRequest = friendFunctions.rejectFriendRequest;
 exports.unfriend = friendFunctions.unfriend;

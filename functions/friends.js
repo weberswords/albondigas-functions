@@ -162,6 +162,146 @@ module.exports = (firebaseHelper) => {
       }
     }),
 
+// Add this function to friends.js, inside the returned object
+
+sendFriendRequest: onCall(async (request) => {
+    console.log('📨 sendFriendRequest started');
+    
+    // Validate authentication
+    if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'User must be authenticated');
+    }
+    
+    const senderId = request.auth.uid;
+    const { email } = request.data;
+    
+    if (!email) {
+        throw new HttpsError('invalid-argument', 'Email is required');
+    }
+    
+    const normalizedEmail = email.toLowerCase().trim();
+    console.log(`📨 Sender: ${senderId}, Target email: ${normalizedEmail}`);
+    
+    try {
+        // Find target user by email
+        const usersSnapshot = await db.collection('users')
+            .where('email', '==', normalizedEmail)
+            .limit(1)
+            .get();
+        
+        if (usersSnapshot.empty) {
+            console.log('❌ User not found for email:', normalizedEmail);
+            throw new HttpsError('not-found', 'User not found');
+        }
+        
+        const targetUser = usersSnapshot.docs[0];
+        const targetUserId = targetUser.id;
+        const targetUserData = targetUser.data();
+        
+        // Prevent self-friending
+        if (targetUserId === senderId) {
+            throw new HttpsError('invalid-argument', 'Cannot send friend request to yourself');
+        }
+        
+        // Create friendship ID (sorted for consistency)
+        const friendshipId = [senderId, targetUserId].sort().join('_');
+        console.log(`📨 Friendship ID: ${friendshipId}`);
+        
+        // Check existing friendship status
+        const existingFriendship = await db.collection('friendships').doc(friendshipId).get();
+        
+        if (existingFriendship.exists) {
+            const data = existingFriendship.data();
+            const status = data.status;
+            const blockedBy = data.blockedBy;
+            
+            if (status === 'blocked') {
+                if (blockedBy === senderId) {
+                    throw new HttpsError('failed-precondition', 
+                        'You have blocked this user. Unblock them first to send a friend request.');
+                } else {
+                    throw new HttpsError('failed-precondition', 
+                        'Unable to send friend request to this user');
+                }
+            }
+            
+            if (status === 'accepted') {
+                throw new HttpsError('already-exists', 'Already friends with this user');
+            }
+            
+            if (status === 'pending') {
+                throw new HttpsError('already-exists', 'Friend request already pending');
+            }
+        }
+        
+        // Get sender info for the request
+        const senderDoc = await db.collection('users').doc(senderId).get();
+        const senderData = senderDoc.data() || {};
+        
+        const now = admin.firestore.Timestamp.now();
+        
+        // Use a batch to write all documents atomically
+        const batch = db.batch();
+        
+        // 1. Create/update main friendship document
+        const friendshipRef = db.collection('friendships').doc(friendshipId);
+        batch.set(friendshipRef, {
+            id: friendshipId,
+            user1Id: [senderId, targetUserId].sort()[0],
+            user2Id: [senderId, targetUserId].sort()[1],
+            status: 'pending',
+            createdAt: now,
+            updatedAt: now,
+            initiatorId: senderId
+        });
+        
+        // 2. Create sender's userFriendships entry
+        const senderFriendRef = db.collection('userFriendships')
+            .doc(senderId)
+            .collection('friends')
+            .doc(targetUserId);
+        batch.set(senderFriendRef, {
+            friendshipId: friendshipId,
+            status: 'pending',
+            role: 'initiator',
+            createdAt: now
+        });
+        
+        // 3. Create recipient's userFriendships entry
+        const recipientFriendRef = db.collection('userFriendships')
+            .doc(targetUserId)
+            .collection('friends')
+            .doc(senderId);
+        batch.set(recipientFriendRef, {
+            friendshipId: friendshipId,
+            status: 'pending',
+            role: 'recipient',
+            createdAt: now
+        });
+        
+        await batch.commit();
+        
+        console.log('✅ Friend request sent successfully');
+        
+        return {
+            success: true,
+            friendshipId: friendshipId,
+            targetUserId: targetUserId,
+            targetDisplayName: targetUserData.displayName || 'Unknown'
+        };
+        
+    } catch (error) {
+        console.error('❌ Error sending friend request:', error);
+        
+        if (error instanceof HttpsError) {
+            throw error;
+        }
+        
+        throw new HttpsError('internal', error.message || 'Failed to send friend request');
+    }
+}),
+
+
     // Reject/cancel a friend request
     rejectFriendRequest: onCall({
       region: 'us-central1',
