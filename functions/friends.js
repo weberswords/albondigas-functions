@@ -216,13 +216,7 @@ sendFriendRequest: onCall(async (request) => {
             const blockedBy = data.blockedBy;
             
             if (status === 'blocked') {
-                if (blockedBy === senderId) {
-                    throw new HttpsError('failed-precondition', 
-                        'You have blocked this user. Unblock them first to send a friend request.');
-                } else {
-                    throw new HttpsError('failed-precondition', 
-                        'Unable to send friend request to this user');
-                }
+                    throw new HttpsError('not-found', 'User not found');
             }
             
             if (status === 'accepted') {
