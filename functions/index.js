@@ -22,6 +22,7 @@ const notificationFunctions = require('./notifications.js')(firebaseHelper);
 const accountFunctions = require('./account.js')(firebaseHelper);
 const videoFunctions = require('./videos.js')(firebaseHelper);
 const verificationFunctions = require('./verification.js')(firebaseHelper);
+const inactiveFunctions = require('./inactive.js')(firebaseHelper);
 
 
 
@@ -50,3 +51,8 @@ exports.verifyCode = verificationFunctions.verifyCode;
 exports.sendPasswordResetCode = verificationFunctions.sendPasswordResetCode;
 exports.verifyPasswordResetCode = verificationFunctions.verifyPasswordResetCode;
 exports.resetPasswordWithCode = verificationFunctions.resetPasswordWithCode;
+
+exports.checkInactiveAccounts = inactiveFunctions.checkInactiveAccounts;
+exports.manualInactiveAccountCheck = inactiveFunctions.manualInactiveAccountCheck;
+exports.updateLastActive = inactiveFunctions.updateLastActive;
+exports.getInactiveAccountStats = inactiveFunctions.getInactiveAccountStats;
