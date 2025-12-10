@@ -39,6 +39,7 @@ exports.unblockUser = friendFunctions.unblockUser;
 
 exports.sendChatMessageNotification = notificationFunctions.sendChatMessageNotification;
 exports.sendFriendRequestNotification = notificationFunctions.sendFriendRequestNotification;
+exports.sendEncryptionNudgeNotification = notificationFunctions.sendEncryptionNudgeNotification;
 
 exports.deleteAccountImmediately = accountFunctions.deleteAccountImmediately;
 exports.scheduleAccountDeletion = accountFunctions.scheduleAccountDeletion;
