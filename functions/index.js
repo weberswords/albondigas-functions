@@ -46,6 +46,7 @@ exports.scheduleAccountDeletion = accountFunctions.scheduleAccountDeletion;
 
 exports.cleanupExpiredVideos = videoFunctions.cleanupExpiredVideos;
 exports.manualVideoCleanup = videoFunctions.manualVideoCleanup;
+exports.deleteVideo = videoFunctions.deleteVideo;
 
 exports.sendVerificationCode = verificationFunctions.sendVerificationCode;
 exports.verifyCode = verificationFunctions.verifyCode;

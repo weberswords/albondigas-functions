@@ -285,6 +285,89 @@ module.exports = (firebaseHelper) => {
         console.error('Error getting cleanup stats:', error);
         throw new HttpsError('internal', error.message);
       }
+    }),
+
+    // Delete individual video message
+    deleteVideo: onCall({
+      region: 'us-central1',
+      maxInstances: 10
+    }, async (request) => {
+      // 1. Verify authentication
+      if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'User must be authenticated');
+      }
+
+      const userId = request.auth.uid;
+      const { messageId, chatId } = request.data || {};
+
+      if (!messageId || !chatId) {
+        throw new HttpsError('invalid-argument', 'messageId and chatId are required');
+      }
+
+      try {
+        // 2. Fetch the message
+        const messageRef = db.collection('chats').doc(chatId).collection('messages').doc(messageId);
+        const messageDoc = await messageRef.get();
+
+        if (!messageDoc.exists) {
+          throw new HttpsError('not-found', 'Message not found');
+        }
+
+        const messageData = messageDoc.data();
+
+        // 3. Verify caller is the sender
+        if (messageData.senderId !== userId) {
+          throw new HttpsError('permission-denied', 'You can only delete your own videos');
+        }
+
+        // 4-6. Delete from Firebase Storage
+        const urlsToDelete = [
+          messageData.videoUrl,
+          messageData.thumbnailUrl,
+          messageData.encryptedVideoUrl,
+          messageData.encryptedThumbnailUrl,
+        ].filter(Boolean);
+
+        const bucket = storage.bucket();
+
+        for (const url of urlsToDelete) {
+          try {
+            const path = extractStoragePath(url);
+            if (path) {
+              await bucket.file(path).delete();
+              console.log(`Deleted: ${path}`);
+            }
+          } catch (err) {
+            // Log but don't fail - file may already be deleted
+            if (err.code === 404) {
+              console.log(`File already deleted: ${url}`);
+            } else {
+              console.warn(`Could not delete file: ${url}`, err);
+            }
+          }
+        }
+
+        // 7. Soft delete in Firestore
+        await messageRef.update({
+          isDeleted: true,
+          deletedAt: admin.firestore.FieldValue.serverTimestamp(),
+          deletedBy: userId,
+          videoUrl: null,
+          thumbnailUrl: null,
+          encryptedVideoUrl: null,
+          encryptedThumbnailUrl: null,
+        });
+
+        // 8. Return success
+        return { success: true };
+
+      } catch (error) {
+        if (error instanceof HttpsError) {
+          throw error;
+        }
+        console.error('Error deleting video:', error);
+        throw new HttpsError('internal', 'Failed to delete video');
+      }
     })
   };
   
