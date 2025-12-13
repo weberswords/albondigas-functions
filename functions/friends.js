@@ -403,6 +403,7 @@ sendFriendRequest: onCall(async (request) => {
       }
 
       const friendshipId = [userId, friendId].sort().join('_');
+      const chatId = [userId, friendId].sort().join('_');
 
       console.log(`👋 UNFRIEND: User ${userId} unfriending ${friendId}`);
 
@@ -433,6 +434,10 @@ sendFriendRequest: onCall(async (request) => {
             ? friendshipData.user2Id
             : friendshipData.user1Id;
 
+          // Get chat document (must read before any writes in transaction)
+          const chatRef = db.collection('chats').doc(chatId);
+          const chatDoc = await transaction.get(chatRef);
+
           // 1. Record the unfriend event BEFORE deleting (so we know who initiated)
           const eventRef = db.collection('friendshipEvents').doc();
           transaction.set(eventRef, {
@@ -462,7 +467,23 @@ sendFriendRequest: onCall(async (request) => {
           transaction.delete(user1FriendshipRef);
           transaction.delete(user2FriendshipRef);
 
-          console.log(`✅ Unfriended successfully, event recorded`);
+          // 4. Delete chat and messages if chat exists
+          if (chatDoc.exists) {
+            console.log(`🗑️ Deleting chat ${chatId} and its messages`);
+            transaction.delete(chatRef);
+
+            // Delete messages in that chat
+            const messagesQuery = await db
+              .collection('messages')
+              .where('chatId', '==', chatId)
+              .get();
+
+            for (const doc of messagesQuery.docs) {
+              transaction.delete(doc.ref);
+            }
+          }
+
+          console.log(`✅ Unfriended successfully, all related documents deleted`);
           return { success: true };
         });
       } catch (error) {
