@@ -3,6 +3,39 @@ const { onCall, HttpsError } = require('firebase-functions/v2/https');
 
 module.exports = (firebaseHelper) => {
   const { admin, db } = firebaseHelper;
+  const storage = admin.storage();
+
+  // Helper to extract storage path from URL
+  function extractStoragePath(url) {
+    if (!url) return null;
+
+    try {
+      const urlObj = new URL(url);
+      const pathMatch = urlObj.pathname.match(/\/o\/(.+?)(\?|$)/);
+      if (pathMatch && pathMatch[1]) {
+        return decodeURIComponent(pathMatch[1]);
+      }
+    } catch (error) {
+      console.error('Failed to parse URL:', url);
+    }
+
+    return null;
+  }
+
+  // Helper to delete file from storage
+  async function deleteFromStorage(path) {
+    try {
+      const bucket = storage.bucket();
+      await bucket.file(path).delete();
+      console.log(`🗑️ Deleted from storage: ${path}`);
+    } catch (error) {
+      if (error.code === 404) {
+        console.log(`⚠️ File already deleted: ${path}`);
+      } else {
+        console.error(`❌ Failed to delete from storage: ${path}`, error);
+      }
+    }
+  }
 
   // Accept a friend request
   return {
@@ -467,25 +500,67 @@ sendFriendRequest: onCall(async (request) => {
           transaction.delete(user1FriendshipRef);
           transaction.delete(user2FriendshipRef);
 
-          // 4. Delete chat and messages if chat exists
+          // 4. Delete chat, messages, and media if chat exists
+          const storagePathsToDelete = [];
+
           if (chatDoc.exists) {
-            console.log(`🗑️ Deleting chat ${chatId} and its messages`);
+            console.log(`🗑️ Deleting chat ${chatId}, messages, and media`);
             transaction.delete(chatRef);
 
-            // Delete messages in that chat
+            // Get messages from top-level collection
             const messagesQuery = await db
               .collection('messages')
               .where('chatId', '==', chatId)
               .get();
 
-            for (const doc of messagesQuery.docs) {
+            // Get messages from subcollection (chats/{chatId}/messages)
+            const subcollectionMessagesQuery = await db
+              .collection('chats')
+              .doc(chatId)
+              .collection('messages')
+              .get();
+
+            // Combine all messages
+            const allMessages = [...messagesQuery.docs, ...subcollectionMessagesQuery.docs];
+
+            for (const doc of allMessages) {
+              const messageData = doc.data();
+
+              // Collect all video/thumbnail URLs for storage deletion
+              const urlsToCheck = [
+                messageData.videoUrl,
+                messageData.thumbnailUrl,
+                messageData.encryptedVideoUrl,
+                messageData.encryptedThumbnailUrl,
+                messageData.storagePath // Direct path if available
+              ];
+
+              for (const url of urlsToCheck) {
+                if (url) {
+                  // If it's already a path (storagePath), use directly; otherwise extract from URL
+                  const path = url.startsWith('http') ? extractStoragePath(url) : url;
+                  if (path) {
+                    storagePathsToDelete.push(path);
+                  }
+                }
+              }
+
+              // Delete the message document
               transaction.delete(doc.ref);
             }
           }
 
           console.log(`✅ Unfriended successfully, all related documents deleted`);
-          return { success: true };
+          return { success: true, storagePathsToDelete };
         });
+
+        // Delete storage files after transaction commits (can't do storage ops in Firestore transactions)
+        if (result.storagePathsToDelete && result.storagePathsToDelete.length > 0) {
+          console.log(`🗑️ Deleting ${result.storagePathsToDelete.length} files from storage`);
+          await Promise.all(result.storagePathsToDelete.map(path => deleteFromStorage(path)));
+        }
+
+        return { success: true };
       } catch (error) {
         console.error('Error unfriending user:', error);
         throw new HttpsError('internal', error.message);
