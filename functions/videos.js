@@ -197,9 +197,146 @@ module.exports = (firebaseHelper) => {
     return null;
   }
   
+  // Cleanup expired archived videos (from unfriend flow)
+  // Archives videos are kept until their expiresAt date, then fully deleted
+  async function performArchivedVideoCleanup(options = {}) {
+    const {
+      batchSize = 500,
+      dryRun = false,
+      triggeredBy = 'system'
+    } = options;
+
+    console.log(`🧹 Starting archived video cleanup (triggered by: ${triggeredBy}, dryRun: ${dryRun})...`);
+
+    const now = admin.firestore.Timestamp.now();
+    let totalDeleted = 0;
+    let totalErrors = 0;
+    let totalSize = 0;
+    const startTime = Date.now();
+
+    try {
+      // Query all archived videos where expiresAt <= now
+      const expiredArchivedQuery = db.collectionGroup('messages')
+        .where('isArchived', '==', true)
+        .where('expiresAt', '<=', now)
+        .limit(batchSize);
+
+      let hasMore = true;
+      let batchCount = 0;
+
+      while (hasMore) {
+        const snapshot = await expiredArchivedQuery.get();
+
+        if (snapshot.empty) {
+          hasMore = false;
+          break;
+        }
+
+        batchCount++;
+        console.log(`📦 Processing batch ${batchCount} of ${snapshot.size} expired archived videos...`);
+
+        const batch = db.batch();
+        const storageDeletePromises = [];
+
+        for (const doc of snapshot.docs) {
+          const messageData = doc.data();
+
+          if (dryRun) {
+            totalDeleted++;
+            continue;
+          }
+
+          // Collect all URLs for storage deletion
+          const urlsToDelete = [
+            messageData.videoUrl,
+            messageData.thumbnailUrl,
+            messageData.encryptedVideoUrl,
+            messageData.encryptedThumbnailUrl,
+            messageData.storagePath
+          ].filter(Boolean);
+
+          for (const url of urlsToDelete) {
+            const path = url.startsWith('http') ? extractStoragePath(url) : url;
+            if (path) {
+              storageDeletePromises.push(
+                deleteFromStorage(path)
+                  .then(size => {
+                    totalSize += size || 0;
+                  })
+                  .catch(error => {
+                    console.error(`❌ Failed to delete: ${path}`, error);
+                    totalErrors++;
+                  })
+              );
+            }
+          }
+
+          // Delete the Firestore document completely (not soft delete)
+          batch.delete(doc.ref);
+          totalDeleted++;
+        }
+
+        if (!dryRun) {
+          // Delete from storage first
+          await Promise.all(storageDeletePromises);
+          // Then delete Firestore docs
+          await batch.commit();
+        }
+
+        console.log(`✅ Batch ${batchCount} complete. Deleted: ${totalDeleted}, Errors: ${totalErrors}`);
+
+        if (snapshot.size < batchSize) {
+          hasMore = false;
+        }
+      }
+
+      const duration = Date.now() - startTime;
+
+      const results = {
+        success: true,
+        archivedVideosDeleted: totalDeleted,
+        errors: totalErrors,
+        totalSizeFreed: totalSize,
+        totalSizeFreedMB: Math.round(totalSize / 1024 / 1024),
+        duration: duration,
+        dryRun: dryRun,
+        triggeredBy: triggeredBy,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      if (!dryRun) {
+        await db.collection('systemLogs')
+          .doc('archivedVideoCleanup')
+          .collection('runs')
+          .add(results);
+      }
+
+      console.log(`🎉 Archived video cleanup complete!`);
+      console.log(`📊 Results: ${totalDeleted} archived videos ${dryRun ? 'would be' : ''} deleted, ${totalErrors} errors`);
+      console.log(`💾 ${dryRun ? 'Would free' : 'Freed'} up ${Math.round(totalSize / 1024 / 1024)} MB`);
+
+      return results;
+
+    } catch (error) {
+      console.error('❌ Archived video cleanup failed:', error);
+
+      await db.collection('systemLogs')
+        .doc('archivedVideoCleanup')
+        .collection('errors')
+        .add({
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          error: error.message,
+          stack: error.stack,
+          triggeredBy: triggeredBy
+        });
+
+      throw error;
+    }
+  }
+
   // Return the public functions
   return {
-    // Scheduled function
+    // Scheduled function for regular expired videos
     cleanupExpiredVideos: onSchedule({
       schedule: '0 2 * * *',
       timeZone: 'America/Los_Angeles',
@@ -213,8 +350,23 @@ module.exports = (firebaseHelper) => {
         batchSize: 500
       });
     }),
+
+    // Scheduled function for expired archived videos (from unfriend)
+    cleanupExpiredArchivedVideos: onSchedule({
+      schedule: '0 3 * * *',  // Run at 3am, after regular cleanup
+      timeZone: 'America/Los_Angeles',
+      region: 'us-central1',
+      maxInstances: 1,
+      memory: '512MB',
+      timeoutSeconds: 540
+    }, async (event) => {
+      return performArchivedVideoCleanup({
+        triggeredBy: 'scheduled',
+        batchSize: 500
+      });
+    }),
     
-    // Manual trigger function
+    // Manual trigger function for regular video cleanup
     manualVideoCleanup: onCall({
       region: 'us-central1',
       maxInstances: 1,
@@ -223,27 +375,61 @@ module.exports = (firebaseHelper) => {
       if (!request.auth) {
         throw new HttpsError('unauthenticated', 'You must be logged in');
       }
-      
+
       const { dryRun = false, batchSize = 100 } = request.data || {};
-      
+
       console.log(`🔧 Manual cleanup triggered by ${request.auth.uid}`);
-      
+
       // Add admin check
-        const userDoc = await db.collection('users').doc(request.auth.uid).get();
-        if (!userDoc.exists || !userDoc.data().isAdmin) {
+      const userDoc = await db.collection('users').doc(request.auth.uid).get();
+      if (!userDoc.exists || !userDoc.data().isAdmin) {
         throw new HttpsError('permission-denied', 'Admin access required');
-        }
-        
+      }
+
       try {
         const results = await performVideoCleanup({
           triggeredBy: `user:${request.auth.uid}`,
           dryRun: dryRun,
           batchSize: batchSize
         });
-        
+
         return results;
       } catch (error) {
         console.error('Manual cleanup error:', error);
+        throw new HttpsError('internal', error.message);
+      }
+    }),
+
+    // Manual trigger function for archived video cleanup
+    manualArchivedVideoCleanup: onCall({
+      region: 'us-central1',
+      maxInstances: 1,
+      timeoutSeconds: 540
+    }, async (request) => {
+      if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'You must be logged in');
+      }
+
+      const { dryRun = false, batchSize = 100 } = request.data || {};
+
+      console.log(`🔧 Manual archived cleanup triggered by ${request.auth.uid}`);
+
+      // Add admin check
+      const userDoc = await db.collection('users').doc(request.auth.uid).get();
+      if (!userDoc.exists || !userDoc.data().isAdmin) {
+        throw new HttpsError('permission-denied', 'Admin access required');
+      }
+
+      try {
+        const results = await performArchivedVideoCleanup({
+          triggeredBy: `user:${request.auth.uid}`,
+          dryRun: dryRun,
+          batchSize: batchSize
+        });
+
+        return results;
+      } catch (error) {
+        console.error('Manual archived cleanup error:', error);
         throw new HttpsError('internal', error.message);
       }
     }),
@@ -256,30 +442,57 @@ module.exports = (firebaseHelper) => {
       if (!request.auth) {
         throw new HttpsError('unauthenticated', 'You must be logged in');
       }
-      
+
       try {
-        // Get count of videos that would be cleaned up
         const now = admin.firestore.Timestamp.now();
+
+        // Get count of regular expired videos
         const expiredQuery = await db.collectionGroup('messages')
           .where('expiresAt', '<=', now)
           .where('contentRemoved', '!=', true)
           .count()
           .get();
-        
-        // Get last cleanup run info
+
+        // Get count of expired archived videos
+        const expiredArchivedQuery = await db.collectionGroup('messages')
+          .where('isArchived', '==', true)
+          .where('expiresAt', '<=', now)
+          .count()
+          .get();
+
+        // Get total archived videos (not yet expired)
+        const totalArchivedQuery = await db.collectionGroup('messages')
+          .where('isArchived', '==', true)
+          .count()
+          .get();
+
+        // Get last regular cleanup run info
         const lastRunQuery = await db.collection('systemLogs')
           .doc('videoCleanup')
           .collection('runs')
           .orderBy('timestamp', 'desc')
           .limit(1)
           .get();
-        
+
+        // Get last archived cleanup run info
+        const lastArchivedRunQuery = await db.collection('systemLogs')
+          .doc('archivedVideoCleanup')
+          .collection('runs')
+          .orderBy('timestamp', 'desc')
+          .limit(1)
+          .get();
+
         const lastRun = lastRunQuery.empty ? null : lastRunQuery.docs[0].data();
-        
+        const lastArchivedRun = lastArchivedRunQuery.empty ? null : lastArchivedRunQuery.docs[0].data();
+
         return {
           pendingCleanup: expiredQuery.data().count,
+          pendingArchivedCleanup: expiredArchivedQuery.data().count,
+          totalArchivedVideos: totalArchivedQuery.data().count,
           lastRun: lastRun,
-          nextScheduledRun: getNextScheduledRun()
+          lastArchivedRun: lastArchivedRun,
+          nextScheduledRun: getNextScheduledRun(),
+          nextArchivedScheduledRun: getNextArchivedScheduledRun()
         };
       } catch (error) {
         console.error('Error getting cleanup stats:', error);
@@ -371,19 +584,35 @@ module.exports = (firebaseHelper) => {
     })
   };
   
-  // Helper to calculate next scheduled run
+  // Helper to calculate next scheduled run (regular cleanup at 2am)
   function getNextScheduledRun() {
     const now = new Date();
     const next = new Date(now);
-    
+
     // Set to 2 AM
     next.setHours(2, 0, 0, 0);
-    
+
     // If it's already past 2 AM today, move to tomorrow
     if (now.getHours() >= 2) {
       next.setDate(next.getDate() + 1);
     }
-    
+
+    return next.toISOString();
+  }
+
+  // Helper to calculate next archived cleanup run (at 3am)
+  function getNextArchivedScheduledRun() {
+    const now = new Date();
+    const next = new Date(now);
+
+    // Set to 3 AM
+    next.setHours(3, 0, 0, 0);
+
+    // If it's already past 3 AM today, move to tomorrow
+    if (now.getHours() >= 3) {
+      next.setDate(next.getDate() + 1);
+    }
+
     return next.toISOString();
   }
 };
