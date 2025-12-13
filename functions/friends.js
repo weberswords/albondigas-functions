@@ -3,6 +3,98 @@ const { onCall, HttpsError } = require('firebase-functions/v2/https');
 
 module.exports = (firebaseHelper) => {
   const { admin, db } = firebaseHelper;
+  const storage = admin.storage();
+
+  // Helper to extract storage path from URL
+  function extractStoragePath(url) {
+    if (!url) return null;
+
+    try {
+      const urlObj = new URL(url);
+      const pathMatch = urlObj.pathname.match(/\/o\/(.+?)(\?|$)/);
+      if (pathMatch && pathMatch[1]) {
+        return decodeURIComponent(pathMatch[1]);
+      }
+    } catch (error) {
+      console.error('Failed to parse URL:', url);
+    }
+
+    return null;
+  }
+
+  // Helper to delete file from storage
+  async function deleteFromStorage(path) {
+    try {
+      const bucket = storage.bucket();
+      await bucket.file(path).delete();
+      console.log(`🗑️ Deleted from storage: ${path}`);
+    } catch (error) {
+      if (error.code === 404) {
+        console.log(`⚠️ File already deleted: ${path}`);
+      } else {
+        console.error(`❌ Failed to delete from storage: ${path}`, error);
+      }
+    }
+  }
+
+  // Helper to archive a user's videos in a chat
+  // Archives videos instead of deleting - users retain ownership of content they created
+  async function archiveUserVideos(chatId, senderId, reason = 'unfriended') {
+    const messagesRef = db.collection('chats').doc(chatId).collection('messages');
+
+    // Query for this user's non-deleted, non-archived videos
+    const snapshot = await messagesRef
+      .where('senderId', '==', senderId)
+      .where('isDeleted', '!=', true)
+      .get();
+
+    if (snapshot.empty) {
+      console.log(`📦 No videos to archive for user ${senderId} in chat ${chatId}`);
+      return 0;
+    }
+
+    // Firestore batches have a limit of 500 operations
+    const BATCH_SIZE = 500;
+    let archivedCount = 0;
+    let batch = db.batch();
+    let operationCount = 0;
+
+    for (const doc of snapshot.docs) {
+      const messageData = doc.data();
+
+      // Skip if already archived
+      if (messageData.isArchived) {
+        continue;
+      }
+
+      batch.update(doc.ref, {
+        isArchived: true,
+        archivedAt: admin.firestore.FieldValue.serverTimestamp(),
+        archivedReason: reason,
+        originalChatId: chatId
+      });
+
+      operationCount++;
+      archivedCount++;
+
+      // Commit batch if we hit the limit
+      if (operationCount >= BATCH_SIZE) {
+        await batch.commit();
+        console.log(`📦 Committed batch of ${operationCount} archives`);
+        batch = db.batch();
+        operationCount = 0;
+      }
+    }
+
+    // Commit any remaining operations
+    if (operationCount > 0) {
+      await batch.commit();
+      console.log(`📦 Committed final batch of ${operationCount} archives`);
+    }
+
+    console.log(`📦 Archived ${archivedCount} videos for user ${senderId} in chat ${chatId}`);
+    return archivedCount;
+  }
 
   // Accept a friend request
   return {
@@ -389,7 +481,7 @@ sendFriendRequest: onCall(async (request) => {
     unfriend: onCall({
       region: 'us-central1',
       maxInstances: 10,
-      timeoutSeconds: 60
+      timeoutSeconds: 120
     }, async (request) => {
       if (!request.auth) {
         throw new HttpsError('unauthenticated', 'You must be logged in to unfriend someone.');
@@ -403,11 +495,13 @@ sendFriendRequest: onCall(async (request) => {
       }
 
       const friendshipId = [userId, friendId].sort().join('_');
+      const chatId = [userId, friendId].sort().join('_');
 
       console.log(`👋 UNFRIEND: User ${userId} unfriending ${friendId}`);
 
       try {
-        return await db.runTransaction(async (transaction) => {
+        // First, run the transaction to update friendship/chat status
+        const result = await db.runTransaction(async (transaction) => {
           // Get the friendship document
           const friendshipRef = db.collection('friendships').doc(friendshipId);
           const friendshipDoc = await transaction.get(friendshipRef);
@@ -433,7 +527,11 @@ sendFriendRequest: onCall(async (request) => {
             ? friendshipData.user2Id
             : friendshipData.user1Id;
 
-          // 1. Record the unfriend event BEFORE deleting (so we know who initiated)
+          // Get chat document (must read before any writes in transaction)
+          const chatRef = db.collection('chats').doc(chatId);
+          const chatDoc = await transaction.get(chatRef);
+
+          // 1. Record the unfriend event
           const eventRef = db.collection('friendshipEvents').doc();
           transaction.set(eventRef, {
             friendshipId: friendshipId,
@@ -462,13 +560,55 @@ sendFriendRequest: onCall(async (request) => {
           transaction.delete(user1FriendshipRef);
           transaction.delete(user2FriendshipRef);
 
-          console.log(`✅ Unfriended successfully, event recorded`);
-          return { success: true };
+          // 4. Mark chat as inactive (don't delete it)
+          if (chatDoc.exists) {
+            transaction.update(chatRef, {
+              isActive: false,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+          }
+
+          return { success: true, otherUserId, chatExists: chatDoc.exists };
         });
+
+        // 5. Archive videos for both users (outside transaction due to potential batch size)
+        if (result.chatExists) {
+          console.log(`📦 Archiving videos for chat ${chatId}`);
+          await archiveUserVideos(chatId, userId);
+          await archiveUserVideos(chatId, result.otherUserId);
+        }
+
+        console.log(`✅ Unfriended successfully, videos archived`);
+        return { success: true };
       } catch (error) {
         console.error('Error unfriending user:', error);
         throw new HttpsError('internal', error.message);
       }
+    }),
+
+    // Helper function exposed for potential direct calls
+    archiveVideosForChat: onCall({
+      region: 'us-central1',
+      maxInstances: 5,
+      timeoutSeconds: 120
+    }, async (request) => {
+      if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'You must be logged in');
+      }
+
+      // Admin only or system call
+      const userDoc = await db.collection('users').doc(request.auth.uid).get();
+      if (!userDoc.exists || !userDoc.data().isAdmin) {
+        throw new HttpsError('permission-denied', 'Admin access required');
+      }
+
+      const { chatId, senderId, reason = 'manual' } = request.data;
+      if (!chatId || !senderId) {
+        throw new HttpsError('invalid-argument', 'chatId and senderId are required');
+      }
+
+      const archived = await archiveUserVideos(chatId, senderId, reason);
+      return { success: true, archivedCount: archived };
     }),
 
 

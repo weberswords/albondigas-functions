@@ -32,9 +32,10 @@ exports.acceptFriendRequest = friendFunctions.acceptFriendRequest;
 exports.rejectFriendRequest = friendFunctions.rejectFriendRequest;
 exports.unfriend = friendFunctions.unfriend;
 exports.blockUser = friendFunctions.blockUser;
-exports.checkFriendshipStatus = friendFunctions.checkFriendshipStatus
-exports.repairFriendshipState = friendFunctions.repairFriendshipState
+exports.checkFriendshipStatus = friendFunctions.checkFriendshipStatus;
+exports.repairFriendshipState = friendFunctions.repairFriendshipState;
 exports.unblockUser = friendFunctions.unblockUser;
+exports.archiveVideosForChat = friendFunctions.archiveVideosForChat;
 
 
 exports.sendChatMessageNotification = notificationFunctions.sendChatMessageNotification;
@@ -45,7 +46,10 @@ exports.deleteAccountImmediately = accountFunctions.deleteAccountImmediately;
 exports.scheduleAccountDeletion = accountFunctions.scheduleAccountDeletion;
 
 exports.cleanupExpiredVideos = videoFunctions.cleanupExpiredVideos;
+exports.cleanupExpiredArchivedVideos = videoFunctions.cleanupExpiredArchivedVideos;
 exports.manualVideoCleanup = videoFunctions.manualVideoCleanup;
+exports.manualArchivedVideoCleanup = videoFunctions.manualArchivedVideoCleanup;
+exports.getCleanupStats = videoFunctions.getCleanupStats;
 exports.deleteVideo = videoFunctions.deleteVideo;
 
 exports.sendVerificationCode = verificationFunctions.sendVerificationCode;
