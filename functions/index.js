@@ -23,8 +23,7 @@ const accountFunctions = require('./account.js')(firebaseHelper);
 const videoFunctions = require('./videos.js')(firebaseHelper);
 const verificationFunctions = require('./verification.js')(firebaseHelper);
 const inactiveFunctions = require('./inactive.js')(firebaseHelper);
-
-
+const chatFunctions = require('./chats.js')(firebaseHelper);
 
 // Export all functions
 exports.sendFriendRequest = friendFunctions.sendFriendRequest;
@@ -62,3 +61,7 @@ exports.checkInactiveAccounts = inactiveFunctions.checkInactiveAccounts;
 exports.manualInactiveAccountCheck = inactiveFunctions.manualInactiveAccountCheck;
 exports.updateLastActive = inactiveFunctions.updateLastActive;
 exports.getInactiveAccountStats = inactiveFunctions.getInactiveAccountStats;
+
+exports.cleanupExpiredChatMessages = chatFunctions.cleanupExpiredChatMessages;
+exports.manualChatMessagesCleanup = chatFunctions.manualChatMessagesCleanup;
+exports.getChatCleanupStats = chatFunctions.getChatCleanupStats;
