@@ -192,6 +192,7 @@ module.exports = (firebaseHelper) => {
           console.log(`✏️ Updating friendship document to 'accepted'`);
           transaction.update(friendshipRef, {
             status: 'accepted',
+            userIds: [friendshipData.user1Id, friendshipData.user2Id].sort(), // Ensure userIds array exists
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
           });
 
@@ -335,6 +336,7 @@ sendFriendRequest: onCall(async (request) => {
             id: friendshipId,
             user1Id: [senderId, targetUserId].sort()[0],
             user2Id: [senderId, targetUserId].sort()[1],
+            userIds: [senderId, targetUserId].sort(), // Sorted array for collection queries
             status: 'pending',
             createdAt: now,
             updatedAt: now,
@@ -649,6 +651,7 @@ sendFriendRequest: onCall(async (request) => {
             transaction.update(friendshipRef, {
               status: 'blocked',
               blockedBy: blockingUserId,
+              userIds: [blockingUserId, userToBlockId].sort(), // Ensure userIds array exists
               updatedAt: now
             });
           } else {
@@ -657,6 +660,7 @@ sendFriendRequest: onCall(async (request) => {
               id: friendshipId,
               user1Id: [blockingUserId, userToBlockId].sort()[0],
               user2Id: [blockingUserId, userToBlockId].sort()[1],
+              userIds: [blockingUserId, userToBlockId].sort(), // Sorted array for collection queries
               status: 'blocked',
               blockedBy: blockingUserId,
               createdAt: now,
