@@ -11,8 +11,11 @@ const INACTIVE_THRESHOLD_DAYS = 365;
 // Days between warning email and actual deletion
 const DELETION_GRACE_PERIOD_DAYS = 30;
 
-module.exports = (firebaseHelper) => {
+module.exports = (firebaseHelper, accountFunctions = null) => {
     const { admin, db } = firebaseHelper;
+
+    // Get deleteUserData from account functions if provided
+    const deleteUserData = accountFunctions?.deleteUserData;
 
     /**
      * Core logic for finding and notifying inactive accounts
@@ -222,6 +225,150 @@ VLRB Team`;
         });
     }
 
+    /**
+     * Core logic for executing scheduled account deletions
+     * Finds accounts where deletionDate has passed and deletes them
+     */
+    async function performScheduledDeletions(options = {}) {
+        const {
+            batchSize = 10,
+            dryRun = false,
+            triggeredBy = 'system'
+        } = options;
+
+        console.log(`🗑️ Starting scheduled deletions (triggered by: ${triggeredBy}, dryRun: ${dryRun})...`);
+
+        if (!deleteUserData) {
+            throw new Error('deleteUserData function not available - check module initialization');
+        }
+
+        const now = admin.firestore.Timestamp.now();
+        let totalDeleted = 0;
+        let totalErrors = 0;
+        let totalSkipped = 0;
+        const startTime = Date.now();
+        const deletionResults = [];
+
+        try {
+            // Query users where:
+            // 1. scheduledForDeletion is true
+            // 2. deletionDate has passed
+            const scheduledUsersQuery = db.collection('users')
+                .where('scheduledForDeletion', '==', true)
+                .where('deletionDate', '<=', now)
+                .limit(batchSize);
+
+            const snapshot = await scheduledUsersQuery.get();
+
+            if (snapshot.empty) {
+                console.log('✅ No accounts scheduled for deletion at this time.');
+                return {
+                    success: true,
+                    accountsDeleted: 0,
+                    errors: 0,
+                    skipped: 0,
+                    dryRun: dryRun,
+                    triggeredBy: triggeredBy,
+                    duration: Date.now() - startTime
+                };
+            }
+
+            console.log(`📦 Found ${snapshot.size} accounts to delete...`);
+
+            for (const doc of snapshot.docs) {
+                const userData = doc.data();
+                const userId = doc.id;
+
+                // Skip if already marked as deleted
+                if (userData.isDeletedAccount) {
+                    totalSkipped++;
+                    continue;
+                }
+
+                if (dryRun) {
+                    console.log(`[DRY RUN] Would delete: ${userId} (${userData.email || 'no email'})`);
+                    deletionResults.push({
+                        userId,
+                        email: userData.email,
+                        status: 'would_delete',
+                        scheduledByUser: userData.scheduledByUser || false,
+                        deletionDate: userData.deletionDate?.toDate?.() || null
+                    });
+                    totalDeleted++;
+                    continue;
+                }
+
+                try {
+                    console.log(`🗑️ Deleting account: ${userId}`);
+                    const result = await deleteUserData(userId);
+
+                    deletionResults.push({
+                        userId,
+                        email: userData.email,
+                        status: 'deleted',
+                        details: result
+                    });
+
+                    totalDeleted++;
+                    console.log(`✅ Deleted account: ${userId}`);
+
+                } catch (error) {
+                    console.error(`❌ Failed to delete account ${userId}:`, error);
+                    deletionResults.push({
+                        userId,
+                        email: userData.email,
+                        status: 'error',
+                        error: error.message
+                    });
+                    totalErrors++;
+                }
+            }
+
+            const duration = Date.now() - startTime;
+
+            const results = {
+                success: true,
+                accountsDeleted: totalDeleted,
+                errors: totalErrors,
+                skipped: totalSkipped,
+                dryRun: dryRun,
+                triggeredBy: triggeredBy,
+                duration: duration,
+                deletionResults: deletionResults,
+                timestamp: admin.firestore.FieldValue.serverTimestamp()
+            };
+
+            // Log results (unless dry run)
+            if (!dryRun) {
+                await db.collection('systemLogs')
+                    .doc('scheduledDeletions')
+                    .collection('runs')
+                    .add(results);
+            }
+
+            console.log(`🎉 Scheduled deletions complete!`);
+            console.log(`📊 Results: ${totalDeleted} accounts ${dryRun ? 'would be' : ''} deleted, ${totalErrors} errors, ${totalSkipped} skipped`);
+            console.log(`⏱️ Duration: ${duration}ms`);
+
+            return results;
+
+        } catch (error) {
+            console.error('❌ Scheduled deletions failed:', error);
+
+            await db.collection('systemLogs')
+                .doc('scheduledDeletions')
+                .collection('errors')
+                .add({
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    error: error.message,
+                    stack: error.stack,
+                    triggeredBy: triggeredBy
+                });
+
+            throw error;
+        }
+    }
+
     return {
         /**
          * Scheduled function - runs daily at 3 AM to check for inactive accounts
@@ -362,25 +509,95 @@ VLRB Team`;
                     .count()
                     .get();
 
-                // Get last run info
-                const lastRunQuery = await db.collection('systemLogs')
+                // Count users ready for deletion (past deletion date)
+                const now_ts = admin.firestore.Timestamp.now();
+                const readyForDeletionQuery = await db.collection('users')
+                    .where('scheduledForDeletion', '==', true)
+                    .where('deletionDate', '<=', now_ts)
+                    .count()
+                    .get();
+
+                // Get last inactive check run info
+                const lastInactiveRunQuery = await db.collection('systemLogs')
                     .doc('inactiveAccountNotifications')
                     .collection('runs')
                     .orderBy('timestamp', 'desc')
                     .limit(1)
                     .get();
 
-                const lastRun = lastRunQuery.empty ? null : lastRunQuery.docs[0].data();
+                // Get last deletion run info
+                const lastDeletionRunQuery = await db.collection('systemLogs')
+                    .doc('scheduledDeletions')
+                    .collection('runs')
+                    .orderBy('timestamp', 'desc')
+                    .limit(1)
+                    .get();
 
                 return {
                     pendingNotification: inactiveQuery.data().count,
                     scheduledForDeletion: scheduledQuery.data().count,
+                    readyForDeletion: readyForDeletionQuery.data().count,
                     inactiveThresholdDays: INACTIVE_THRESHOLD_DAYS,
                     gracePeriodDays: DELETION_GRACE_PERIOD_DAYS,
-                    lastRun: lastRun
+                    lastInactiveCheckRun: lastInactiveRunQuery.empty ? null : lastInactiveRunQuery.docs[0].data(),
+                    lastDeletionRun: lastDeletionRunQuery.empty ? null : lastDeletionRunQuery.docs[0].data()
                 };
             } catch (error) {
                 console.error('Error getting inactive account stats:', error);
+                throw new HttpsError('internal', error.message);
+            }
+        }),
+
+        /**
+         * Scheduled function - runs daily at 4 AM to execute scheduled deletions
+         * Runs after checkInactiveAccounts (3 AM) to process any newly scheduled accounts
+         */
+        executeScheduledDeletions: onSchedule({
+            schedule: '0 4 * * *', // Daily at 4 AM
+            timeZone: 'America/Los_Angeles',
+            region: 'us-central1',
+            maxInstances: 1,
+            memory: '1GB',
+            timeoutSeconds: 540
+        }, async (event) => {
+            return performScheduledDeletions({
+                triggeredBy: 'scheduled',
+                batchSize: 10 // Process 10 accounts per run to avoid timeout
+            });
+        }),
+
+        /**
+         * Manual trigger for admins to execute scheduled deletions
+         */
+        manualExecuteScheduledDeletions: onCall({
+            region: 'us-central1',
+            maxInstances: 1,
+            timeoutSeconds: 540
+        }, async (request) => {
+            if (!request.auth) {
+                throw new HttpsError('unauthenticated', 'You must be logged in');
+            }
+
+            // Verify admin status
+            const userDoc = await db.collection('users').doc(request.auth.uid).get();
+            if (!userDoc.exists || !userDoc.data().isAdmin) {
+                throw new HttpsError('permission-denied', 'Admin access required');
+            }
+
+            const { dryRun = true, batchSize = 5 } = request.data || {};
+
+            console.log(`🔧 Manual scheduled deletion triggered by ${request.auth.uid}`);
+
+            try {
+                const results = await performScheduledDeletions({
+                    triggeredBy: `user:${request.auth.uid}`,
+                    dryRun: dryRun,
+                    batchSize: batchSize
+                });
+
+                return results;
+            } catch (error) {
+                console.error('Manual scheduled deletion error:', error);
                 throw new HttpsError('internal', error.message);
             }
         })

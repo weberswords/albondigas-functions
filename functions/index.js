@@ -2,7 +2,6 @@ const admin = require('firebase-admin');
 
 // Import service account
 const serviceAccount = require('./firebase_admin.json');
-const account = require('./account.js');
 
 // Initialize admin
 admin.initializeApp({
@@ -11,18 +10,20 @@ admin.initializeApp({
 });
 
 // Initialize Firestore ONCE
-const db = admin.firestore(); // This line was missing
+const db = admin.firestore();
 
 // Create a helper object
 const firebaseHelper = { admin, db };
 
 // Import function modules with the helper
+// Account functions initialized first as other modules may depend on them
+const accountFunctions = require('./account.js')(firebaseHelper);
 const friendFunctions = require('./friends.js')(firebaseHelper);
 const notificationFunctions = require('./notifications.js')(firebaseHelper);
-const accountFunctions = require('./account.js')(firebaseHelper);
 const videoFunctions = require('./videos.js')(firebaseHelper);
 const verificationFunctions = require('./verification.js')(firebaseHelper);
-const inactiveFunctions = require('./inactive.js')(firebaseHelper);
+// Pass accountFunctions to inactive so it can use deleteUserData
+const inactiveFunctions = require('./inactive.js')(firebaseHelper, accountFunctions);
 const loggingFunctions = require('./logging.js')(firebaseHelper);
 
 
@@ -41,7 +42,6 @@ exports.archiveVideosForChat = friendFunctions.archiveVideosForChat;
 
 exports.sendChatMessageNotification = notificationFunctions.sendChatMessageNotification;
 exports.sendFriendRequestNotification = notificationFunctions.sendFriendRequestNotification;
-exports.sendEncryptionNudgeNotification = notificationFunctions.sendEncryptionNudgeNotification;
 
 exports.deleteAccountImmediately = accountFunctions.deleteAccountImmediately;
 exports.scheduleAccountDeletion = accountFunctions.scheduleAccountDeletion;
@@ -63,5 +63,7 @@ exports.checkInactiveAccounts = inactiveFunctions.checkInactiveAccounts;
 exports.manualInactiveAccountCheck = inactiveFunctions.manualInactiveAccountCheck;
 exports.updateLastActive = inactiveFunctions.updateLastActive;
 exports.getInactiveAccountStats = inactiveFunctions.getInactiveAccountStats;
+exports.executeScheduledDeletions = inactiveFunctions.executeScheduledDeletions;
+exports.manualExecuteScheduledDeletions = inactiveFunctions.manualExecuteScheduledDeletions;
 
 exports.ingestLogs = loggingFunctions.ingestLogs;
