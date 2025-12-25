@@ -22,6 +22,7 @@ const friendFunctions = require('./friends.js')(firebaseHelper);
 const notificationFunctions = require('./notifications.js')(firebaseHelper);
 const videoFunctions = require('./videos.js')(firebaseHelper);
 const verificationFunctions = require('./verification.js')(firebaseHelper);
+const signupFunctions = require('./signup.js')(firebaseHelper);
 // Pass accountFunctions to inactive so it can use deleteUserData
 const inactiveFunctions = require('./inactive.js')(firebaseHelper, accountFunctions);
 const loggingFunctions = require('./logging.js')(firebaseHelper);
@@ -58,6 +59,13 @@ exports.verifyCode = verificationFunctions.verifyCode;
 exports.sendPasswordResetCode = verificationFunctions.sendPasswordResetCode;
 exports.verifyPasswordResetCode = verificationFunctions.verifyPasswordResetCode;
 exports.resetPasswordWithCode = verificationFunctions.resetPasswordWithCode;
+
+// Signup functions (email-first verification flow)
+exports.initiateSignup = signupFunctions.initiateSignup;
+exports.verifySignupToken = signupFunctions.verifySignupToken;
+exports.completeSignup = signupFunctions.completeSignup;
+exports.resendSignupLink = signupFunctions.resendSignupLink;
+exports.cleanupPendingRegistrations = signupFunctions.cleanupPendingRegistrations;
 
 exports.checkInactiveAccounts = inactiveFunctions.checkInactiveAccounts;
 exports.manualInactiveAccountCheck = inactiveFunctions.manualInactiveAccountCheck;
