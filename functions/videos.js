@@ -334,6 +334,212 @@ module.exports = (firebaseHelper) => {
     }
   }
 
+  /**
+   * Core logic for cleaning up orphaned chats (where both participants deleted accounts)
+   */
+  async function performOrphanedChatCleanup(options = {}) {
+    const {
+      batchSize = 50,
+      dryRun = false,
+      triggeredBy = 'system'
+    } = options;
+
+    console.log(`🧹 Starting orphaned chat cleanup (triggered by: ${triggeredBy}, dryRun: ${dryRun})...`);
+
+    let chatsDeleted = 0;
+    let messagesDeleted = 0;
+    let storageFilesDeleted = 0;
+    let totalErrors = 0;
+    const startTime = Date.now();
+    const chatDetails = [];
+
+    try {
+      // Query chats that contain at least one deleted user
+      const chatsQuery = await db.collection('chats')
+        .where('containsDeletedUser', '==', true)
+        .limit(batchSize)
+        .get();
+
+      if (chatsQuery.empty) {
+        console.log('✅ No chats with deleted users to check.');
+        return {
+          success: true,
+          chatsDeleted: 0,
+          messagesDeleted: 0,
+          storageFilesDeleted: 0,
+          errors: 0,
+          dryRun,
+          triggeredBy,
+          duration: Date.now() - startTime
+        };
+      }
+
+      console.log(`📦 Checking ${chatsQuery.size} chats with deleted users...`);
+
+      for (const chatDoc of chatsQuery.docs) {
+        const chatData = chatDoc.data();
+        const chatId = chatDoc.id;
+        const participants = chatData.participants || [];
+
+        // Check if ALL participants are deleted
+        let allDeleted = true;
+        for (const participantId of participants) {
+          const userDoc = await db.collection('users').doc(participantId).get();
+          if (userDoc.exists) {
+            allDeleted = false;
+            break;
+          }
+        }
+
+        if (!allDeleted) {
+          // At least one participant still exists, skip this chat
+          continue;
+        }
+
+        // Both participants are deleted - clean up this chat
+        console.log(`🔍 Found fully orphaned chat: ${chatId}`);
+
+        if (dryRun) {
+          // Count messages for dry run
+          const messagesCount = await db.collection('chats')
+            .doc(chatId)
+            .collection('messages')
+            .count()
+            .get();
+
+          chatDetails.push({
+            chatId,
+            action: 'would_delete',
+            messageCount: messagesCount.data().count
+          });
+          chatsDeleted++;
+          messagesDeleted += messagesCount.data().count;
+        } else {
+          // Delete all messages and their storage files
+          let hasMoreMessages = true;
+          let chatMessagesDeleted = 0;
+
+          while (hasMoreMessages) {
+            const messagesQuery = await db.collection('chats')
+              .doc(chatId)
+              .collection('messages')
+              .limit(100)
+              .get();
+
+            if (messagesQuery.empty) {
+              hasMoreMessages = false;
+              break;
+            }
+
+            const messageBatch = db.batch();
+
+            for (const msgDoc of messagesQuery.docs) {
+              const msgData = msgDoc.data();
+
+              // Delete storage files for this message
+              const urlsToDelete = [
+                msgData.videoUrl,
+                msgData.thumbnailUrl,
+                msgData.encryptedVideoUrl,
+                msgData.encryptedThumbnailUrl,
+                msgData.storagePath
+              ].filter(Boolean);
+
+              for (const url of urlsToDelete) {
+                try {
+                  const path = url.startsWith('http') ? extractStoragePath(url) : url;
+                  if (path) {
+                    await deleteFromStorage(path);
+                    storageFilesDeleted++;
+                  }
+                } catch (err) {
+                  console.log(`⚠️ Could not delete storage file: ${err.message}`);
+                }
+              }
+
+              // Delete the message document
+              messageBatch.delete(msgDoc.ref);
+              chatMessagesDeleted++;
+            }
+
+            await messageBatch.commit();
+
+            if (messagesQuery.size < 100) {
+              hasMoreMessages = false;
+            }
+          }
+
+          // Delete chat settings subcollection if it exists
+          const settingsQuery = await db.collection('chats')
+            .doc(chatId)
+            .collection('settings')
+            .limit(100)
+            .get();
+
+          if (!settingsQuery.empty) {
+            const settingsBatch = db.batch();
+            settingsQuery.docs.forEach(doc => settingsBatch.delete(doc.ref));
+            await settingsBatch.commit();
+          }
+
+          // Delete the chat document
+          await chatDoc.ref.delete();
+          console.log(`🗑️ Deleted orphaned chat ${chatId} with ${chatMessagesDeleted} messages`);
+
+          chatDetails.push({
+            chatId,
+            action: 'deleted',
+            messagesDeleted: chatMessagesDeleted
+          });
+          chatsDeleted++;
+          messagesDeleted += chatMessagesDeleted;
+        }
+      }
+
+      const duration = Date.now() - startTime;
+
+      const results = {
+        success: true,
+        chatsDeleted,
+        messagesDeleted,
+        storageFilesDeleted,
+        errors: totalErrors,
+        details: chatDetails,
+        dryRun,
+        triggeredBy,
+        duration,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      if (!dryRun && chatsDeleted > 0) {
+        await db.collection('systemLogs')
+          .doc('orphanedChatCleanup')
+          .collection('runs')
+          .add(results);
+      }
+
+      console.log(`🎉 Orphaned chat cleanup complete!`);
+      console.log(`📊 Results: ${chatsDeleted} chats, ${messagesDeleted} messages, ${storageFilesDeleted} files ${dryRun ? 'would be' : ''} deleted`);
+
+      return results;
+
+    } catch (error) {
+      console.error('❌ Orphaned chat cleanup failed:', error);
+
+      await db.collection('systemLogs')
+        .doc('orphanedChatCleanup')
+        .collection('errors')
+        .add({
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          error: error.message,
+          stack: error.stack,
+          triggeredBy
+        });
+
+      throw error;
+    }
+  }
+
   // Return the public functions
   return {
     // Scheduled function for regular expired videos
@@ -580,6 +786,56 @@ module.exports = (firebaseHelper) => {
         }
         console.error('Error deleting video:', error);
         throw new HttpsError('internal', 'Failed to delete video');
+      }
+    }),
+
+    /**
+     * Scheduled function - runs weekly on Sunday at 3:00 AM to clean up orphaned chats
+     */
+    cleanupOrphanedChats: onSchedule({
+      schedule: '0 3 * * 0', // Sunday at 3:00 AM
+      timeZone: 'America/Los_Angeles',
+      region: 'us-central1',
+      maxInstances: 1,
+      memory: '1GB',
+      timeoutSeconds: 540
+    }, async (event) => {
+      return performOrphanedChatCleanup({
+        triggeredBy: 'scheduled',
+        batchSize: 50
+      });
+    }),
+
+    /**
+     * Manual trigger for admins to clean up orphaned chats
+     */
+    manualOrphanedChatCleanup: onCall({
+      region: 'us-central1',
+      maxInstances: 1,
+      timeoutSeconds: 540
+    }, async (request) => {
+      if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'You must be logged in');
+      }
+
+      const userDoc = await db.collection('users').doc(request.auth.uid).get();
+      if (!userDoc.exists || !userDoc.data().isAdmin) {
+        throw new HttpsError('permission-denied', 'Admin access required');
+      }
+
+      const { dryRun = true, batchSize = 20 } = request.data || {};
+
+      console.log(`🔧 Manual orphaned chat cleanup triggered by ${request.auth.uid}`);
+
+      try {
+        return await performOrphanedChatCleanup({
+          triggeredBy: `user:${request.auth.uid}`,
+          dryRun,
+          batchSize
+        });
+      } catch (error) {
+        console.error('Manual orphaned chat cleanup error:', error);
+        throw new HttpsError('internal', error.message);
       }
     })
   };

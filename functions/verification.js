@@ -1,4 +1,5 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { defineSecret } = require('firebase-functions/params');
 const mailgun = require('mailgun-js');
 
@@ -7,6 +8,125 @@ const mailgunDomain = "mail.vlrb.app"
 
 module.exports = (firebaseHelper) => {
     const { admin, db } = firebaseHelper;
+
+    /**
+     * Core logic for cleaning up expired verification codes
+     */
+    async function performVerificationCodeCleanup(options = {}) {
+        const {
+            batchSize = 500,
+            dryRun = false,
+            triggeredBy = 'system'
+        } = options;
+
+        console.log(`🧹 Starting verification code cleanup (triggered by: ${triggeredBy}, dryRun: ${dryRun})...`);
+
+        const now = admin.firestore.Timestamp.now();
+        let verificationCodesDeleted = 0;
+        let resetCodesDeleted = 0;
+        let totalErrors = 0;
+        const startTime = Date.now();
+
+        try {
+            // Clean up expired verification codes
+            let hasMore = true;
+            while (hasMore) {
+                const expiredVerificationQuery = await db.collection('verificationCodes')
+                    .where('expiresAt', '<=', now)
+                    .limit(batchSize)
+                    .get();
+
+                if (expiredVerificationQuery.empty) {
+                    hasMore = false;
+                    break;
+                }
+
+                if (dryRun) {
+                    verificationCodesDeleted += expiredVerificationQuery.size;
+                    hasMore = false;
+                } else {
+                    const batch = db.batch();
+                    expiredVerificationQuery.docs.forEach(doc => batch.delete(doc.ref));
+                    await batch.commit();
+                    verificationCodesDeleted += expiredVerificationQuery.size;
+
+                    if (expiredVerificationQuery.size < batchSize) {
+                        hasMore = false;
+                    }
+                }
+            }
+
+            // Clean up expired password reset codes
+            hasMore = true;
+            while (hasMore) {
+                const expiredResetQuery = await db.collection('passwordResetCodes')
+                    .where('expiresAt', '<=', now)
+                    .limit(batchSize)
+                    .get();
+
+                if (expiredResetQuery.empty) {
+                    hasMore = false;
+                    break;
+                }
+
+                if (dryRun) {
+                    resetCodesDeleted += expiredResetQuery.size;
+                    hasMore = false;
+                } else {
+                    const batch = db.batch();
+                    expiredResetQuery.docs.forEach(doc => batch.delete(doc.ref));
+                    await batch.commit();
+                    resetCodesDeleted += expiredResetQuery.size;
+
+                    if (expiredResetQuery.size < batchSize) {
+                        hasMore = false;
+                    }
+                }
+            }
+
+            const duration = Date.now() - startTime;
+
+            const results = {
+                success: true,
+                verificationCodesDeleted,
+                resetCodesDeleted,
+                totalDeleted: verificationCodesDeleted + resetCodesDeleted,
+                errors: totalErrors,
+                dryRun,
+                triggeredBy,
+                duration,
+                timestamp: admin.firestore.FieldValue.serverTimestamp()
+            };
+
+            if (!dryRun) {
+                await db.collection('systemLogs')
+                    .doc('verificationCodeCleanup')
+                    .collection('runs')
+                    .add(results);
+            }
+
+            console.log(`🎉 Verification code cleanup complete!`);
+            console.log(`📊 Results: ${verificationCodesDeleted} verification codes, ${resetCodesDeleted} reset codes ${dryRun ? 'would be' : ''} deleted`);
+
+            return results;
+
+        } catch (error) {
+            console.error('❌ Verification code cleanup failed:', error);
+
+            await db.collection('systemLogs')
+                .doc('verificationCodeCleanup')
+                .collection('errors')
+                .add({
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    error: error.message,
+                    stack: error.stack,
+                    triggeredBy
+                });
+
+            throw error;
+        }
+    }
+
     return {
         sendVerificationCode: onCall({
             region: 'us-central1',
@@ -404,6 +524,56 @@ VLRB Team`;
             } catch (error) {
                 console.error('Error resetting password:', error);
                 throw error;
+            }
+        }),
+
+        /**
+         * Scheduled function - runs daily at 5:30 AM to clean up expired codes
+         */
+        cleanupExpiredVerificationCodes: onSchedule({
+            schedule: '30 5 * * *', // Daily at 5:30 AM
+            timeZone: 'America/Los_Angeles',
+            region: 'us-central1',
+            maxInstances: 1,
+            memory: '256MB',
+            timeoutSeconds: 120
+        }, async (event) => {
+            return performVerificationCodeCleanup({
+                triggeredBy: 'scheduled',
+                batchSize: 500
+            });
+        }),
+
+        /**
+         * Manual trigger for admins to clean up expired verification codes
+         */
+        manualVerificationCodeCleanup: onCall({
+            region: 'us-central1',
+            maxInstances: 1,
+            timeoutSeconds: 120
+        }, async (request) => {
+            if (!request.auth) {
+                throw new HttpsError('unauthenticated', 'You must be logged in');
+            }
+
+            const userDoc = await db.collection('users').doc(request.auth.uid).get();
+            if (!userDoc.exists || !userDoc.data().isAdmin) {
+                throw new HttpsError('permission-denied', 'Admin access required');
+            }
+
+            const { dryRun = true, batchSize = 100 } = request.data || {};
+
+            console.log(`🔧 Manual verification code cleanup triggered by ${request.auth.uid}`);
+
+            try {
+                return await performVerificationCodeCleanup({
+                    triggeredBy: `user:${request.auth.uid}`,
+                    dryRun,
+                    batchSize
+                });
+            } catch (error) {
+                console.error('Manual verification code cleanup error:', error);
+                throw new HttpsError('internal', error.message);
             }
         })
     };

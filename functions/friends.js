@@ -1,9 +1,157 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 
 
 module.exports = (firebaseHelper) => {
   const { admin, db } = firebaseHelper;
   const storage = admin.storage();
+
+  /**
+   * Core logic for cleaning up stale userFriendships entries
+   * Removes friend references pointing to deleted users
+   */
+  async function performStaleUserFriendshipsCleanup(options = {}) {
+    const {
+      batchSize = 100,
+      dryRun = false,
+      triggeredBy = 'system'
+    } = options;
+
+    console.log(`🧹 Starting stale userFriendships cleanup (triggered by: ${triggeredBy}, dryRun: ${dryRun})...`);
+
+    let entriesDeleted = 0;
+    let usersProcessed = 0;
+    let totalErrors = 0;
+    const startTime = Date.now();
+    const cleanupDetails = [];
+
+    try {
+      // Get all deleted users
+      const deletedUsersQuery = await db.collection('deletedUsers')
+        .limit(batchSize)
+        .get();
+
+      if (deletedUsersQuery.empty) {
+        console.log('✅ No deleted users to process.');
+        return {
+          success: true,
+          entriesDeleted: 0,
+          usersProcessed: 0,
+          errors: 0,
+          dryRun,
+          triggeredBy,
+          duration: Date.now() - startTime
+        };
+      }
+
+      console.log(`📦 Found ${deletedUsersQuery.size} deleted users to check...`);
+
+      for (const deletedUserDoc of deletedUsersQuery.docs) {
+        const deletedUserId = deletedUserDoc.id;
+
+        // Find all userFriendships entries that reference this deleted user
+        // This requires checking all users' friend subcollections
+        // We use a collectionGroup query to find them
+
+        // Note: This requires a composite index on userFriendships/{userId}/friends
+        // If the index doesn't exist, this will need to be done differently
+
+        try {
+          // Query all friend entries where the document ID matches the deleted user
+          // Since we can't query by document ID directly in collectionGroup,
+          // we need to iterate through users who might have this person as a friend
+
+          // Alternative approach: check friendships collection for this user
+          const friendshipsQuery = await db.collection('friendships')
+            .where('userIds', 'array-contains', deletedUserId)
+            .get();
+
+          for (const friendshipDoc of friendshipsQuery.docs) {
+            const friendshipData = friendshipDoc.data();
+            const otherUserId = friendshipData.user1Id === deletedUserId
+              ? friendshipData.user2Id
+              : friendshipData.user1Id;
+
+            // Check if the other user's userFriendships still has an entry for the deleted user
+            const friendEntryRef = db.collection('userFriendships')
+              .doc(otherUserId)
+              .collection('friends')
+              .doc(deletedUserId);
+
+            const friendEntryDoc = await friendEntryRef.get();
+
+            if (friendEntryDoc.exists) {
+              if (dryRun) {
+                console.log(`[DRY RUN] Would delete friend entry: ${otherUserId}/friends/${deletedUserId}`);
+                cleanupDetails.push({
+                  userId: otherUserId,
+                  deletedFriendId: deletedUserId,
+                  action: 'would_delete'
+                });
+                entriesDeleted++;
+              } else {
+                await friendEntryRef.delete();
+                console.log(`🗑️ Deleted stale friend entry: ${otherUserId}/friends/${deletedUserId}`);
+                cleanupDetails.push({
+                  userId: otherUserId,
+                  deletedFriendId: deletedUserId,
+                  action: 'deleted'
+                });
+                entriesDeleted++;
+              }
+            }
+          }
+
+          usersProcessed++;
+
+        } catch (err) {
+          console.error(`❌ Error processing deleted user ${deletedUserId}:`, err);
+          totalErrors++;
+        }
+      }
+
+      const duration = Date.now() - startTime;
+
+      const results = {
+        success: true,
+        entriesDeleted,
+        usersProcessed,
+        errors: totalErrors,
+        details: cleanupDetails.slice(0, 50), // Limit details in response
+        dryRun,
+        triggeredBy,
+        duration,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      if (!dryRun && entriesDeleted > 0) {
+        await db.collection('systemLogs')
+          .doc('staleUserFriendshipsCleanup')
+          .collection('runs')
+          .add(results);
+      }
+
+      console.log(`🎉 Stale userFriendships cleanup complete!`);
+      console.log(`📊 Results: ${entriesDeleted} entries ${dryRun ? 'would be' : ''} deleted from ${usersProcessed} users`);
+
+      return results;
+
+    } catch (error) {
+      console.error('❌ Stale userFriendships cleanup failed:', error);
+
+      await db.collection('systemLogs')
+        .doc('staleUserFriendshipsCleanup')
+        .collection('errors')
+        .add({
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          error: error.message,
+          stack: error.stack,
+          triggeredBy
+        });
+
+      throw error;
+    }
+  }
 
   // Helper to extract storage path from URL
   function extractStoragePath(url) {
@@ -1072,8 +1220,57 @@ sendFriendRequest: onCall(async (request) => {
         console.error(`❌ Error repairing friendship: ${error}`);
         return { success: false, error: error.message };
       }
-    })
+    }),
 
+    /**
+     * Scheduled function - runs weekly on Sunday at 4:00 AM to clean up stale userFriendships
+     */
+    cleanupStaleUserFriendships: onSchedule({
+      schedule: '0 4 * * 0', // Sunday at 4:00 AM
+      timeZone: 'America/Los_Angeles',
+      region: 'us-central1',
+      maxInstances: 1,
+      memory: '512MB',
+      timeoutSeconds: 300
+    }, async (event) => {
+      return performStaleUserFriendshipsCleanup({
+        triggeredBy: 'scheduled',
+        batchSize: 100
+      });
+    }),
+
+    /**
+     * Manual trigger for admins to clean up stale userFriendships
+     */
+    manualStaleUserFriendshipsCleanup: onCall({
+      region: 'us-central1',
+      maxInstances: 1,
+      timeoutSeconds: 300
+    }, async (request) => {
+      if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'You must be logged in');
+      }
+
+      const userDoc = await db.collection('users').doc(request.auth.uid).get();
+      if (!userDoc.exists || !userDoc.data().isAdmin) {
+        throw new HttpsError('permission-denied', 'Admin access required');
+      }
+
+      const { dryRun = true, batchSize = 50 } = request.data || {};
+
+      console.log(`🔧 Manual stale userFriendships cleanup triggered by ${request.auth.uid}`);
+
+      try {
+        return await performStaleUserFriendshipsCleanup({
+          triggeredBy: `user:${request.auth.uid}`,
+          dryRun,
+          batchSize
+        });
+      } catch (error) {
+        console.error('Manual stale userFriendships cleanup error:', error);
+        throw new HttpsError('internal', error.message);
+      }
+    })
 
   };
 };

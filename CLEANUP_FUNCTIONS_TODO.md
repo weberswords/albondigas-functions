@@ -1,328 +1,202 @@
-# Data Cleanup Functions - Future Implementation Guide
+# Data Cleanup Functions - Implementation Complete
 
-This document describes the remaining cleanup functions that need to be built for vlrb.
-Each function is prioritized and includes specifications for implementation.
-
----
-
-## MEDIUM Priority
-
-### 1. `cleanupExpiredInviteCodes`
-
-**Purpose:** Remove expired group invite codes to keep the database clean.
-
-**Type:** Scheduled Pub/Sub Function
-
-**Schedule:** Daily at 5:00 AM PT (after other cleanup jobs)
-
-**Location:** New file `functions/inviteCodes.js` or add to existing `functions/groups.js`
-
-**Logic:**
-```
-1. Query `groupInviteCodes` where `expiresAt <= now`
-2. For each expired code:
-   - Delete the document
-   - Increment counter
-3. Log results to `systemLogs/inviteCodeCleanup/runs`
-```
-
-**Firestore Query:**
-```javascript
-db.collection('groupInviteCodes')
-  .where('expiresAt', '<=', admin.firestore.Timestamp.now())
-  .limit(500)
-```
-
-**Return:** `{ success, codesDeleted, errors, duration }`
+All data cleanup functions have been implemented. This document serves as reference documentation for the cleanup system.
 
 ---
 
-### 2. `cleanupOrphanedGroups`
+## Complete Cleanup Schedule
 
-**Purpose:** Handle groups where the creator has deleted their account.
+### Daily Schedule (PT Timezone)
 
-**Type:** Scheduled Pub/Sub Function + Manual Callable
+| Time | Function | File | Purpose |
+|------|----------|------|---------|
+| 2:00 AM | `cleanupExpiredVideos` | videos.js | Soft-delete expired video messages |
+| 3:00 AM | `checkInactiveAccounts` | inactive.js | Notify inactive users (365 days) |
+| 3:00 AM | `cleanupExpiredArchivedVideos` | videos.js | Hard-delete archived videos |
+| 4:00 AM | `executeScheduledDeletions` | inactive.js | Delete accounts past deletion date |
+| 5:00 AM | `cleanupExpiredInviteCodes` | groups.js | Delete expired group invite codes |
+| 5:30 AM | `cleanupExpiredVerificationCodes` | verification.js | Delete expired verification codes |
 
-**Schedule:** Weekly (Sunday at 2:00 AM PT)
+### Weekly Schedule (Sunday, PT Timezone)
 
-**Location:** New file `functions/groups.js`
+| Time | Function | File | Purpose |
+|------|----------|------|---------|
+| 2:00 AM | `cleanupOrphanedGroups` | groups.js | Handle groups where creator deleted account |
+| 3:00 AM | `cleanupOrphanedChats` | videos.js | Delete chats where both users are gone |
+| 4:00 AM | `cleanupStaleUserFriendships` | friends.js | Clean up friend refs to deleted users |
 
-**Logic:**
-```
-1. Query `groups` collection
-2. For each group, check if `creatorId` exists in `users` OR `deletedUsers`
-3. If creator is in `deletedUsers`:
-   a. Check if group has other members
-   b. If yes: Transfer ownership to longest-tenured member, notify them
-   c. If no: Delete group and cascade:
-      - Delete all `groupInviteCodes` where `groupId` matches
-      - Delete group storage files (if any)
-      - Delete group document
-4. Log results
-```
+### Manual Only (Admin Callable)
 
-**Considerations:**
-- Need to define group membership model (is there a `groupMembers` subcollection?)
-- Ownership transfer notification via FCM
-- May want admin approval before auto-transfer
-
-**Return:** `{ success, groupsTransferred, groupsDeleted, errors }`
+| Function | File | Purpose |
+|----------|------|---------|
+| `auditOrphanedStorageFiles` | storage.js | Find storage files with no Firestore doc |
+| `getStorageAuditStats` | storage.js | View recent storage audit results |
 
 ---
 
-### 3. `cleanupExpiredVerificationCodes`
+## Function Details
 
-**Purpose:** Remove expired email verification and password reset codes.
+### 1. Video Cleanup Functions (videos.js)
 
-**Type:** Scheduled Pub/Sub Function
+#### `cleanupExpiredVideos`
+- **Schedule:** Daily at 2:00 AM
+- **Action:** Soft-deletes messages where `expiresAt <= now`
+- **Sets:** `contentRemoved: true`, nullifies URLs
+- **Logs to:** `systemLogs/videoCleanup/runs`
 
-**Schedule:** Daily at 5:30 AM PT
+#### `cleanupExpiredArchivedVideos`
+- **Schedule:** Daily at 3:00 AM
+- **Action:** Hard-deletes archived videos (from unfriend)
+- **Deletes:** Storage files and Firestore documents
+- **Logs to:** `systemLogs/archivedVideoCleanup/runs`
 
-**Location:** Add to `functions/verification.js`
+#### `cleanupOrphanedChats`
+- **Schedule:** Weekly Sunday at 3:00 AM
+- **Action:** Deletes chats where ALL participants have deleted accounts
+- **Deletes:** Messages, storage files, settings, chat document
+- **Logs to:** `systemLogs/orphanedChatCleanup/runs`
 
-**Logic:**
-```
-1. Query `verificationCodes` where `expiresAt <= now`
-2. Batch delete expired codes
-3. Query `passwordResetCodes` where `expiresAt <= now`
-4. Batch delete expired codes
-5. Log results to `systemLogs/verificationCodeCleanup/runs`
-```
+### 2. Account Cleanup Functions
 
-**Firestore Queries:**
-```javascript
-// Verification codes
-db.collection('verificationCodes')
-  .where('expiresAt', '<=', now)
-  .limit(500)
+#### `deleteAccountImmediately` (account.js)
+- **Trigger:** User-initiated callable
+- **Cascade:**
+  - Creates placeholder in `deletedUsers`
+  - Marks friendships with `containsDeletedUser`
+  - Soft-deletes messages (nullifies URLs)
+  - Deletes `userFriendships/{uid}/friends/*`
+  - Deletes user subcollections (`security`, `pendingDeviceVerifications`)
+  - Deletes `verificationCodes/{uid}`, `passwordResetCodes/{uid}`
+  - Deletes storage: `videos/{uid}/`, `thumbnails/{uid}/`, `users/{uid}/avatars/`
+  - Deletes `notificationSettings/{uid}`
+  - Deletes Firebase Auth user
+  - Deletes user document
 
-// Password reset codes
-db.collection('passwordResetCodes')
-  .where('expiresAt', '<=', now)
-  .limit(500)
-```
+#### `executeScheduledDeletions` (inactive.js)
+- **Schedule:** Daily at 4:00 AM
+- **Action:** Deletes accounts where `scheduledForDeletion == true` AND `deletionDate <= now`
+- **Uses:** `deleteUserData` from account.js
+- **Logs to:** `systemLogs/scheduledDeletions/runs`
 
-**Return:** `{ success, verificationCodesDeleted, resetCodesDeleted, duration }`
+#### `checkInactiveAccounts` (inactive.js)
+- **Schedule:** Daily at 3:00 AM
+- **Action:** Notifies users inactive for 365+ days
+- **Sets:** `scheduledForDeletion: true`, `deletionDate: now + 30 days`
+- **Logs to:** `systemLogs/inactiveAccountNotifications/runs`
+
+### 3. Verification Code Cleanup (verification.js)
+
+#### `cleanupExpiredVerificationCodes`
+- **Schedule:** Daily at 5:30 AM
+- **Action:** Deletes expired `verificationCodes` and `passwordResetCodes`
+- **Logs to:** `systemLogs/verificationCodeCleanup/runs`
+
+### 4. Group Functions (groups.js)
+
+#### `cleanupExpiredInviteCodes`
+- **Schedule:** Daily at 5:00 AM
+- **Action:** Deletes `groupInviteCodes` where `expiresAt <= now`
+- **Logs to:** `systemLogs/inviteCodeCleanup/runs`
+
+#### `cleanupOrphanedGroups`
+- **Schedule:** Weekly Sunday at 2:00 AM
+- **Action:** Handles groups where creator deleted account
+- **Logic:**
+  - If group has other members: Transfer ownership
+  - If no members: Delete group and invite codes
+- **Logs to:** `systemLogs/orphanedGroupCleanup/runs`
+
+### 5. Friendship Cleanup (friends.js)
+
+#### `cleanupStaleUserFriendships`
+- **Schedule:** Weekly Sunday at 4:00 AM
+- **Action:** Removes friend entries pointing to deleted users
+- **Logs to:** `systemLogs/staleUserFriendshipsCleanup/runs`
+
+### 6. Storage Audit (storage.js)
+
+#### `auditOrphanedStorageFiles`
+- **Type:** Manual admin callable only (not scheduled due to cost)
+- **Action:** Lists storage files and checks for Firestore references
+- **Options:**
+  - `dryRun: true` (default) - Report only
+  - `maxFiles: 500` - Limit files to scan
+  - `prefix: 'videos/'` - Limit to specific folder
+- **Logs to:** `systemLogs/storageAudit/runs`
 
 ---
 
-### 4. `cleanupOrphanedChats`
+## Admin Manual Triggers
 
-**Purpose:** Clean up chat documents and messages where both participants have deleted their accounts.
+All scheduled functions have manual admin triggers with dry-run support:
 
-**Type:** Scheduled Pub/Sub Function
-
-**Schedule:** Weekly (Sunday at 3:00 AM PT)
-
-**Location:** Add to `functions/videos.js` or new `functions/chats.js`
-
-**Logic:**
-```
-1. Query `chats` where `containsDeletedUser == true`
-2. For each chat:
-   a. Check both participants against `deletedUsers` collection
-   b. If BOTH users are deleted:
-      - Delete all messages in chat (with storage cleanup)
-      - Delete chat settings subcollection
-      - Delete chat document
-3. Log results
-```
-
-**Firestore Query:**
-```javascript
-db.collection('chats')
-  .where('containsDeletedUser', '==', true)
-  .limit(100)
-```
-
-**Storage Cleanup:**
-- For each message with `videoUrl` or `thumbnailUrl`, extract path and delete from Storage
-- Use the existing `extractStoragePath` helper from videos.js
-
-**Return:** `{ success, chatsDeleted, messagesDeleted, storageFilesDeleted, errors }`
+| Scheduled Function | Manual Trigger | Default Dry Run |
+|--------------------|----------------|-----------------|
+| `cleanupExpiredVideos` | `manualVideoCleanup` | true |
+| `cleanupExpiredArchivedVideos` | `manualArchivedVideoCleanup` | true |
+| `cleanupOrphanedChats` | `manualOrphanedChatCleanup` | true |
+| `checkInactiveAccounts` | `manualInactiveAccountCheck` | true |
+| `executeScheduledDeletions` | `manualExecuteScheduledDeletions` | true |
+| `cleanupExpiredInviteCodes` | `manualInviteCodeCleanup` | true |
+| `cleanupExpiredVerificationCodes` | `manualVerificationCodeCleanup` | true |
+| `cleanupOrphanedGroups` | `manualOrphanedGroupCleanup` | true |
+| `cleanupStaleUserFriendships` | `manualStaleUserFriendshipsCleanup` | true |
+| N/A | `auditOrphanedStorageFiles` | true |
 
 ---
 
-## LOW Priority
+## Logging Pattern
 
-### 5. `auditOrphanedStorageFiles`
-
-**Purpose:** Find and optionally delete storage files that have no corresponding Firestore document.
-
-**Type:** Callable Function (Admin only) - NOT scheduled due to cost/time
-
-**Location:** New file `functions/storage.js`
-
-**Logic:**
-```
-1. List all files in Storage bucket (paginated)
-2. For each file path, determine the expected Firestore location:
-   - `videos/{uid}/{videoId}` -> Check messages collection
-   - `thumbnails/{uid}/{thumbnailId}` -> Check messages collection
-   - `users/{uid}/avatars/{filename}` -> Check users collection
-3. Query Firestore to verify document exists
-4. If no document found, mark as orphaned
-5. In non-dry-run mode, delete orphaned files
-6. Generate report
-```
-
-**Parameters:**
-- `dryRun: boolean` (default: true)
-- `prefix: string` (optional - limit to specific folder like "videos/")
-- `maxFiles: number` (default: 1000 - prevent runaway)
-
-**Considerations:**
-- This is expensive (Storage list operations + many Firestore reads)
-- Should have strong rate limiting
-- Consider running monthly at most
-- Log extensively for audit trail
-
-**Return:**
+All cleanup functions log to `systemLogs/{functionName}/runs` with:
 ```javascript
 {
-  success,
-  filesScanned,
-  orphansFound,
-  orphansDeleted, // 0 if dryRun
-  totalSizeFreed,
-  orphanedFiles: [{ path, size, lastModified }],
-  duration
+  success: true,
+  // Function-specific counts
+  dryRun: boolean,
+  triggeredBy: 'scheduled' | 'user:{uid}',
+  duration: number,
+  timestamp: FieldValue.serverTimestamp()
+}
+```
+
+Errors log to `systemLogs/{functionName}/errors` with:
+```javascript
+{
+  timestamp: FieldValue.serverTimestamp(),
+  error: string,
+  stack: string,
+  triggeredBy: string
 }
 ```
 
 ---
 
-### 6. `updateChatPreviewsAfterCleanup`
+## Firestore Indexes Required
 
-**Purpose:** Fix `lastMessage` references in chats after video cleanup removes the referenced message.
+The following indexes may need to be created for optimal performance:
 
-**Type:** Enhancement to existing `cleanupExpiredVideos` function
+1. `users` collection:
+   - `scheduledForDeletion` + `deletionDate`
+   - `lastActive` + `scheduledForDeletion`
 
-**Location:** Modify `functions/videos.js`
+2. `chats` collection:
+   - `containsDeletedUser`
 
-**Logic:**
-After marking a message as `contentRemoved`:
-```
-1. Check if this message is the `lastMessage` on the parent chat
-2. If yes:
-   a. Query for the next most recent non-removed message
-   b. Update chat's `lastMessage` field
-   c. If no valid messages remain, set `lastMessage` to null
-```
+3. `groupInviteCodes` collection:
+   - `expiresAt`
 
-**Implementation Notes:**
-- Could be done inline during cleanup (adds latency)
-- Or as a separate batch job after cleanup completes
-- Need to track which chats were affected during cleanup
+4. `verificationCodes` / `passwordResetCodes` collections:
+   - `expiresAt`
 
-**Alternative Approach:**
-Instead of fixing after cleanup, modify client to:
-- Query for latest message where `contentRemoved != true`
-- Handle null/missing lastMessage gracefully
+5. `friendships` collection:
+   - `userIds` (array-contains)
 
 ---
 
-### 7. `cleanupStaleUserFriendships`
+## Notes
 
-**Purpose:** Clean up `userFriendships` entries that point to deleted users.
-
-**Type:** Scheduled Pub/Sub Function
-
-**Schedule:** Weekly (Sunday at 4:00 AM PT)
-
-**Location:** Add to `functions/friends.js`
-
-**Logic:**
-```
-1. Query `deletedUsers` collection (get list of deleted user IDs)
-2. For each deleted user ID:
-   a. Query all userFriendships docs where a friend entry references this ID
-   b. Delete those friend entries
-3. Log results
-```
-
-**Note:** This is partially handled by `deleteAccountImmediately` now, but this catches any missed entries.
-
-**Return:** `{ success, entriesDeleted, errors }`
-
----
-
-## Implementation Order Recommendation
-
-1. **cleanupExpiredVerificationCodes** - Quick win, simple implementation
-2. **cleanupExpiredInviteCodes** - Simple, similar pattern
-3. **cleanupOrphanedChats** - Important for storage costs
-4. **cleanupOrphanedGroups** - Needed before groups feature expands
-5. **cleanupStaleUserFriendships** - Nice to have, catches edge cases
-6. **updateChatPreviewsAfterCleanup** - UX improvement
-7. **auditOrphanedStorageFiles** - Complex, run manually when needed
-
----
-
-## Shared Patterns
-
-All cleanup functions should follow these patterns:
-
-### Logging
-```javascript
-await db.collection('systemLogs')
-  .doc('functionName')
-  .collection('runs')
-  .add({
-    timestamp: admin.firestore.FieldValue.serverTimestamp(),
-    triggeredBy: triggeredBy,
-    ...results
-  });
-```
-
-### Error Handling
-```javascript
-await db.collection('systemLogs')
-  .doc('functionName')
-  .collection('errors')
-  .add({
-    timestamp: admin.firestore.FieldValue.serverTimestamp(),
-    error: error.message,
-    stack: error.stack,
-    triggeredBy: triggeredBy
-  });
-```
-
-### Batch Sizing
-- Firestore batch limit: 500 operations
-- Process in batches of 100-500 depending on complexity
-- Include pagination for large datasets
-
-### Dry Run Mode
-- All cleanup functions should support `dryRun` parameter
-- Dry run should log what WOULD be deleted without deleting
-- Manual triggers should default to `dryRun: true`
-
-### Admin-Only Callable Functions
-```javascript
-const userDoc = await db.collection('users').doc(request.auth.uid).get();
-if (!userDoc.exists || !userDoc.data().isAdmin) {
-  throw new HttpsError('permission-denied', 'Admin access required');
-}
-```
-
----
-
-## Daily Cleanup Schedule Summary
-
-| Time (PT) | Function | Purpose |
-|-----------|----------|---------|
-| 2:00 AM | cleanupExpiredVideos | Soft-delete expired video messages |
-| 3:00 AM | checkInactiveAccounts | Notify inactive users |
-| 3:00 AM | cleanupExpiredArchivedVideos | Hard-delete archived videos |
-| 4:00 AM | executeScheduledDeletions | Delete accounts past deletion date |
-| 5:00 AM | cleanupExpiredInviteCodes | Delete expired invite codes |
-| 5:30 AM | cleanupExpiredVerificationCodes | Delete expired verification codes |
-
-## Weekly Cleanup Schedule Summary
-
-| Day | Time (PT) | Function | Purpose |
-|-----|-----------|----------|---------|
-| Sunday | 2:00 AM | cleanupOrphanedGroups | Handle creator-deleted groups |
-| Sunday | 3:00 AM | cleanupOrphanedChats | Delete chats where both users gone |
-| Sunday | 4:00 AM | cleanupStaleUserFriendships | Clean up friend references |
+- All scheduled functions run in `America/Los_Angeles` timezone
+- All manual triggers require admin privileges (`isAdmin: true` on user doc)
+- All manual triggers default to `dryRun: true` for safety
+- Batch sizes are configurable but have sensible defaults
+- Functions are designed to be idempotent and safe to retry
