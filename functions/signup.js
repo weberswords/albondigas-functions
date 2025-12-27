@@ -1,4 +1,4 @@
-const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { defineSecret } = require('firebase-functions/params');
 const mailgun = require('mailgun-js');
@@ -14,6 +14,24 @@ const MAGIC_LINK_EXPIRY_MINUTES = 15;
 const VERIFICATION_TOKEN_EXPIRY_MINUTES = 10;
 const MAX_ATTEMPTS_PER_HOUR = 3;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+// CORS configuration
+const ALLOWED_ORIGINS = [
+    'https://vlrb.app',
+    'http://localhost:3000',
+    'http://localhost:5000'
+];
+
+/**
+ * Set CORS headers on response
+ */
+function setCorsHeaders(res, origin) {
+    const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+    res.set('Access-Control-Allow-Origin', allowedOrigin);
+    res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.set('Access-Control-Allow-Headers', 'Content-Type');
+    res.set('Access-Control-Max-Age', '3600');
+}
 
 /**
  * Generate SHA256 hash of email (lowercase, trimmed)
@@ -189,7 +207,97 @@ module.exports = (firebaseHelper) => {
         }),
 
         /**
-         * verifySignupToken - Verify the magic link token from email
+         * Core verification logic - shared between onCall and HTTP endpoints
+         * Returns { success, verificationToken, email } or throws an error object
+         */
+        _verifySignupTokenCore: async function(token, secret) {
+            if (!token) {
+                throw { code: 'invalid', message: 'Token is required' };
+            }
+
+            // Verify JWT signature and expiration
+            let decoded;
+            try {
+                decoded = jwt.verify(token, secret);
+            } catch (error) {
+                if (error.name === 'TokenExpiredError') {
+                    throw { code: 'expired', message: 'Token has expired' };
+                }
+                throw { code: 'invalid', message: 'Invalid token' };
+            }
+
+            if (decoded.purpose !== 'signup') {
+                throw { code: 'invalid', message: 'Invalid token purpose' };
+            }
+
+            const { emailHash, email } = decoded;
+
+            // Look up pending registration
+            const pendingRef = db.collection('pendingRegistrations').doc(emailHash);
+            const pendingDoc = await pendingRef.get();
+
+            if (!pendingDoc.exists) {
+                throw { code: 'invalid', message: 'Signup request not found or expired' };
+            }
+
+            const pendingData = pendingDoc.data();
+
+            // Verify token matches stored token
+            if (pendingData.magicLinkToken !== token) {
+                throw { code: 'invalid', message: 'Invalid or outdated link' };
+            }
+
+            // Check if already verified
+            if (pendingData.verified) {
+                // Return existing verification token if still valid
+                if (pendingData.verificationToken) {
+                    try {
+                        jwt.verify(pendingData.verificationToken, secret);
+                        return {
+                            success: true,
+                            verificationToken: pendingData.verificationToken,
+                            email: email,
+                            alreadyVerified: true
+                        };
+                    } catch {
+                        // Token expired, generate new one below
+                    }
+                }
+            }
+
+            // Check if registration expired
+            if (new Date() > pendingData.expiresAt.toDate()) {
+                throw { code: 'expired', message: 'Signup link has expired. Please request a new one.' };
+            }
+
+            // Generate verification token for completeSignup
+            const verificationToken = generateToken(
+                {
+                    email: email,
+                    emailHash: emailHash,
+                    purpose: 'complete_signup'
+                },
+                secret,
+                VERIFICATION_TOKEN_EXPIRY_MINUTES
+            );
+
+            // Update pending registration
+            await pendingRef.update({
+                verified: true,
+                verifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+                verificationToken: verificationToken
+            });
+
+            console.log(`verifySignupToken: Email verified for ${emailHash.substring(0, 8)}...`);
+            return {
+                success: true,
+                verificationToken: verificationToken,
+                email: email
+            };
+        },
+
+        /**
+         * verifySignupToken - Verify the magic link token from email (onCall for iOS)
          *
          * Called when user clicks the magic link. Returns a verification token
          * that can be used to complete signup.
@@ -199,19 +307,76 @@ module.exports = (firebaseHelper) => {
             maxInstances: 10,
             timeoutSeconds: 60,
             secrets: [jwtSecret]
-        }, async (request) => {
+        }, async function(request) {
             try {
                 const { token } = request.data;
+                return await this._verifySignupTokenCore(token, jwtSecret.value());
+            } catch (error) {
+                if (error.code && error.message) {
+                    // Error from core function
+                    const codeMap = {
+                        'invalid': 'invalid-argument',
+                        'expired': 'deadline-exceeded',
+                        'already_verified': 'already-exists'
+                    };
+                    throw new HttpsError(codeMap[error.code] || 'internal', error.message);
+                }
+                console.error('Error in verifySignupToken:', error);
+                throw new HttpsError('internal', 'Failed to verify signup token');
+            }
+        }),
+
+        /**
+         * verifySignupTokenHttp - HTTP endpoint for web verification with CORS
+         *
+         * POST https://us-central1-albondigas-8cfd9.cloudfunctions.net/verifySignupTokenHttp
+         * Body: { "token": "<jwt_token>" }
+         */
+        verifySignupTokenHttp: onRequest({
+            region: 'us-central1',
+            maxInstances: 10,
+            timeoutSeconds: 60,
+            secrets: [jwtSecret]
+        }, async (req, res) => {
+            const origin = req.get('Origin') || '';
+            setCorsHeaders(res, origin);
+
+            // Handle CORS preflight
+            if (req.method === 'OPTIONS') {
+                res.status(204).send('');
+                return;
+            }
+
+            // Only allow POST
+            if (req.method !== 'POST') {
+                res.status(405).json({ success: false, error: 'method_not_allowed' });
+                return;
+            }
+
+            try {
+                const { token } = req.body;
 
                 if (!token) {
-                    throw new HttpsError('invalid-argument', 'Token is required');
+                    res.status(400).json({ success: false, error: 'invalid' });
+                    return;
                 }
 
                 // Verify JWT signature and expiration
-                const decoded = verifyToken(token, jwtSecret.value());
+                let decoded;
+                try {
+                    decoded = jwt.verify(token, jwtSecret.value());
+                } catch (error) {
+                    if (error.name === 'TokenExpiredError') {
+                        res.status(400).json({ success: false, error: 'expired' });
+                        return;
+                    }
+                    res.status(400).json({ success: false, error: 'invalid' });
+                    return;
+                }
 
                 if (decoded.purpose !== 'signup') {
-                    throw new HttpsError('invalid-argument', 'Invalid token purpose');
+                    res.status(400).json({ success: false, error: 'invalid' });
+                    return;
                 }
 
                 const { emailHash, email } = decoded;
@@ -221,36 +386,28 @@ module.exports = (firebaseHelper) => {
                 const pendingDoc = await pendingRef.get();
 
                 if (!pendingDoc.exists) {
-                    throw new HttpsError('not-found', 'Signup request not found or expired');
+                    res.status(400).json({ success: false, error: 'invalid' });
+                    return;
                 }
 
                 const pendingData = pendingDoc.data();
 
                 // Verify token matches stored token
                 if (pendingData.magicLinkToken !== token) {
-                    throw new HttpsError('invalid-argument', 'Invalid or outdated link');
+                    res.status(400).json({ success: false, error: 'invalid' });
+                    return;
                 }
 
                 // Check if already verified
                 if (pendingData.verified) {
-                    // Return existing verification token if still valid
-                    if (pendingData.verificationToken) {
-                        try {
-                            verifyToken(pendingData.verificationToken, jwtSecret.value());
-                            return {
-                                success: true,
-                                verificationToken: pendingData.verificationToken,
-                                email: email
-                            };
-                        } catch {
-                            // Token expired, generate new one
-                        }
-                    }
+                    res.status(200).json({ success: true, alreadyVerified: true });
+                    return;
                 }
 
                 // Check if registration expired
                 if (new Date() > pendingData.expiresAt.toDate()) {
-                    throw new HttpsError('deadline-exceeded', 'Signup link has expired. Please request a new one.');
+                    res.status(400).json({ success: false, error: 'expired' });
+                    return;
                 }
 
                 // Generate verification token for completeSignup
@@ -271,19 +428,12 @@ module.exports = (firebaseHelper) => {
                     verificationToken: verificationToken
                 });
 
-                console.log(`verifySignupToken: Email verified for ${emailHash.substring(0, 8)}...`);
-                return {
-                    success: true,
-                    verificationToken: verificationToken,
-                    email: email
-                };
+                console.log(`verifySignupTokenHttp: Email verified for ${emailHash.substring(0, 8)}...`);
+                res.status(200).json({ success: true });
 
             } catch (error) {
-                if (error instanceof HttpsError) {
-                    throw error;
-                }
-                console.error('Error in verifySignupToken:', error);
-                throw new HttpsError('internal', 'Failed to verify signup token');
+                console.error('Error in verifySignupTokenHttp:', error);
+                res.status(500).json({ success: false, error: 'internal' });
             }
         }),
 
