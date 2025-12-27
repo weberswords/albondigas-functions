@@ -66,6 +66,7 @@ exports.verifySignupToken = signupFunctions.verifySignupToken;
 exports.verifySignupTokenHttp = signupFunctions.verifySignupTokenHttp;
 exports.completeSignup = signupFunctions.completeSignup;
 exports.resendSignupLink = signupFunctions.resendSignupLink;
+exports.checkSignupVerification = signupFunctions.checkSignupVerification;
 exports.cleanupPendingRegistrations = signupFunctions.cleanupPendingRegistrations;
 
 exports.checkInactiveAccounts = inactiveFunctions.checkInactiveAccounts;

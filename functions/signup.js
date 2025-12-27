@@ -694,6 +694,79 @@ module.exports = (firebaseHelper) => {
         }),
 
         /**
+         * checkSignupVerification - Check if email has been verified (for cross-device flow)
+         *
+         * Called by iOS app to poll verification status when user verifies
+         * on a different device (e.g., clicks magic link on computer).
+         */
+        checkSignupVerification: onCall({
+            region: 'us-central1',
+            maxInstances: 10,
+            timeoutSeconds: 60,
+            secrets: [jwtSecret]
+        }, async (request) => {
+            try {
+                const { email } = request.data;
+
+                if (!email || !isValidEmail(email)) {
+                    return { verified: false };
+                }
+
+                const normalizedEmail = email.toLowerCase().trim();
+                const emailHash = generateEmailHash(normalizedEmail);
+
+                // Look up pending registration
+                const pendingDoc = await db.collection('pendingRegistrations').doc(emailHash).get();
+
+                if (!pendingDoc.exists) {
+                    return { verified: false };
+                }
+
+                const data = pendingDoc.data();
+
+                // Check if verified and has a valid verification token
+                if (data.verified && data.verificationToken) {
+                    // Verify the token is still valid
+                    try {
+                        jwt.verify(data.verificationToken, jwtSecret.value());
+                        console.log(`checkSignupVerification: Found verified signup for ${emailHash.substring(0, 8)}...`);
+                        return {
+                            verified: true,
+                            verificationToken: data.verificationToken
+                        };
+                    } catch {
+                        // Token expired - generate a fresh one
+                        const verificationToken = generateToken(
+                            {
+                                email: data.email,
+                                emailHash: emailHash,
+                                purpose: 'complete_signup'
+                            },
+                            jwtSecret.value(),
+                            VERIFICATION_TOKEN_EXPIRY_MINUTES
+                        );
+
+                        await db.collection('pendingRegistrations').doc(emailHash).update({
+                            verificationToken: verificationToken
+                        });
+
+                        console.log(`checkSignupVerification: Refreshed token for ${emailHash.substring(0, 8)}...`);
+                        return {
+                            verified: true,
+                            verificationToken: verificationToken
+                        };
+                    }
+                }
+
+                return { verified: false };
+
+            } catch (error) {
+                console.error('Error in checkSignupVerification:', error);
+                return { verified: false };
+            }
+        }),
+
+        /**
          * cleanupPendingRegistrations - Daily cleanup of expired registrations
          *
          * Runs daily at 6:00 AM PT to remove expired pending registrations.
