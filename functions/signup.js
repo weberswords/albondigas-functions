@@ -121,6 +121,49 @@ module.exports = (firebaseHelper) => {
 
                 if (pendingDoc.exists) {
                     const data = pendingDoc.data();
+
+                    // Check if already verified - let them resume instead of rate limiting
+                    if (data.verified) {
+                        // Try to use existing verification token if still valid
+                        if (data.verificationToken) {
+                            try {
+                                jwt.verify(data.verificationToken, jwtSecret.value());
+                                console.log(`initiateSignup: Resuming verified signup for ${emailHash.substring(0, 8)}...`);
+                                return {
+                                    success: true,
+                                    alreadyVerified: true,
+                                    verificationToken: data.verificationToken,
+                                    email: data.email
+                                };
+                            } catch {
+                                // Token expired, generate a new one below
+                            }
+                        }
+
+                        // Generate fresh verification token
+                        const verificationToken = generateToken(
+                            {
+                                email: data.email,
+                                emailHash: emailHash,
+                                purpose: 'complete_signup'
+                            },
+                            jwtSecret.value(),
+                            VERIFICATION_TOKEN_EXPIRY_MINUTES
+                        );
+
+                        await pendingRef.update({
+                            verificationToken: verificationToken
+                        });
+
+                        console.log(`initiateSignup: Refreshed verification token for ${emailHash.substring(0, 8)}...`);
+                        return {
+                            success: true,
+                            alreadyVerified: true,
+                            verificationToken: verificationToken,
+                            email: data.email
+                        };
+                    }
+
                     const lastAttemptAt = data.lastAttemptAt?.toDate() || new Date(0);
                     const hourAgo = new Date(Date.now() - RATE_LIMIT_WINDOW_MS);
 
