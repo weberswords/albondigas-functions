@@ -63,6 +63,7 @@ exports.resetPasswordWithCode = verificationFunctions.resetPasswordWithCode;
 // Signup functions (email-first verification flow)
 exports.initiateSignup = signupFunctions.initiateSignup;
 exports.verifySignupToken = signupFunctions.verifySignupToken;
+exports.verifySignupTokenHttp = signupFunctions.verifySignupTokenHttp;
 exports.completeSignup = signupFunctions.completeSignup;
 exports.resendSignupLink = signupFunctions.resendSignupLink;
 exports.cleanupPendingRegistrations = signupFunctions.cleanupPendingRegistrations;
