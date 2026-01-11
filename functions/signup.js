@@ -73,6 +73,96 @@ function verifyToken(token, secret) {
 module.exports = (firebaseHelper) => {
     const { admin, db } = firebaseHelper;
 
+    /**
+     * Core verification logic - shared between onCall and HTTP endpoints
+     * Returns { success, verificationToken, email } or throws an error object
+     */
+    async function verifySignupTokenCore(token, secret) {
+        if (!token) {
+            throw { code: 'invalid', message: 'Token is required' };
+        }
+
+        // Verify JWT signature and expiration
+        let decoded;
+        try {
+            decoded = jwt.verify(token, secret);
+        } catch (error) {
+            if (error.name === 'TokenExpiredError') {
+                throw { code: 'expired', message: 'Token has expired' };
+            }
+            throw { code: 'invalid', message: 'Invalid token' };
+        }
+
+        if (decoded.purpose !== 'signup') {
+            throw { code: 'invalid', message: 'Invalid token purpose' };
+        }
+
+        const { emailHash, email } = decoded;
+
+        // Look up pending registration
+        const pendingRef = db.collection('pendingRegistrations').doc(emailHash);
+        const pendingDoc = await pendingRef.get();
+
+        if (!pendingDoc.exists) {
+            throw { code: 'invalid', message: 'Signup request not found or expired' };
+        }
+
+        const pendingData = pendingDoc.data();
+
+        // Verify token matches stored token
+        if (pendingData.magicLinkToken !== token) {
+            throw { code: 'invalid', message: 'Invalid or outdated link' };
+        }
+
+        // Check if already verified
+        if (pendingData.verified) {
+            // Return existing verification token if still valid
+            if (pendingData.verificationToken) {
+                try {
+                    jwt.verify(pendingData.verificationToken, secret);
+                    return {
+                        success: true,
+                        verificationToken: pendingData.verificationToken,
+                        email: email,
+                        alreadyVerified: true
+                    };
+                } catch {
+                    // Token expired, generate new one below
+                }
+            }
+        }
+
+        // Check if registration expired
+        if (new Date() > pendingData.expiresAt.toDate()) {
+            throw { code: 'expired', message: 'Signup link has expired. Please request a new one.' };
+        }
+
+        // Generate verification token for completeSignup
+        const verificationToken = generateToken(
+            {
+                email: email,
+                emailHash: emailHash,
+                purpose: 'complete_signup'
+            },
+            secret,
+            VERIFICATION_TOKEN_EXPIRY_MINUTES
+        );
+
+        // Update pending registration
+        await pendingRef.update({
+            verified: true,
+            verifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+            verificationToken: verificationToken
+        });
+
+        console.log(`verifySignupToken: Email verified for ${emailHash.substring(0, 8)}...`);
+        return {
+            success: true,
+            verificationToken: verificationToken,
+            email: email
+        };
+    }
+
     return {
         /**
          * initiateSignup - Start the email-first signup flow
@@ -250,96 +340,6 @@ module.exports = (firebaseHelper) => {
         }),
 
         /**
-         * Core verification logic - shared between onCall and HTTP endpoints
-         * Returns { success, verificationToken, email } or throws an error object
-         */
-        _verifySignupTokenCore: async function(token, secret) {
-            if (!token) {
-                throw { code: 'invalid', message: 'Token is required' };
-            }
-
-            // Verify JWT signature and expiration
-            let decoded;
-            try {
-                decoded = jwt.verify(token, secret);
-            } catch (error) {
-                if (error.name === 'TokenExpiredError') {
-                    throw { code: 'expired', message: 'Token has expired' };
-                }
-                throw { code: 'invalid', message: 'Invalid token' };
-            }
-
-            if (decoded.purpose !== 'signup') {
-                throw { code: 'invalid', message: 'Invalid token purpose' };
-            }
-
-            const { emailHash, email } = decoded;
-
-            // Look up pending registration
-            const pendingRef = db.collection('pendingRegistrations').doc(emailHash);
-            const pendingDoc = await pendingRef.get();
-
-            if (!pendingDoc.exists) {
-                throw { code: 'invalid', message: 'Signup request not found or expired' };
-            }
-
-            const pendingData = pendingDoc.data();
-
-            // Verify token matches stored token
-            if (pendingData.magicLinkToken !== token) {
-                throw { code: 'invalid', message: 'Invalid or outdated link' };
-            }
-
-            // Check if already verified
-            if (pendingData.verified) {
-                // Return existing verification token if still valid
-                if (pendingData.verificationToken) {
-                    try {
-                        jwt.verify(pendingData.verificationToken, secret);
-                        return {
-                            success: true,
-                            verificationToken: pendingData.verificationToken,
-                            email: email,
-                            alreadyVerified: true
-                        };
-                    } catch {
-                        // Token expired, generate new one below
-                    }
-                }
-            }
-
-            // Check if registration expired
-            if (new Date() > pendingData.expiresAt.toDate()) {
-                throw { code: 'expired', message: 'Signup link has expired. Please request a new one.' };
-            }
-
-            // Generate verification token for completeSignup
-            const verificationToken = generateToken(
-                {
-                    email: email,
-                    emailHash: emailHash,
-                    purpose: 'complete_signup'
-                },
-                secret,
-                VERIFICATION_TOKEN_EXPIRY_MINUTES
-            );
-
-            // Update pending registration
-            await pendingRef.update({
-                verified: true,
-                verifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-                verificationToken: verificationToken
-            });
-
-            console.log(`verifySignupToken: Email verified for ${emailHash.substring(0, 8)}...`);
-            return {
-                success: true,
-                verificationToken: verificationToken,
-                email: email
-            };
-        },
-
-        /**
          * verifySignupToken - Verify the magic link token from email (onCall for iOS)
          *
          * Called when user clicks the magic link. Returns a verification token
@@ -350,10 +350,10 @@ module.exports = (firebaseHelper) => {
             maxInstances: 10,
             timeoutSeconds: 60,
             secrets: [jwtSecret]
-        }, async function(request) {
+        }, async (request) => {
             try {
                 const { token } = request.data;
-                return await this._verifySignupTokenCore(token, jwtSecret.value());
+                return await verifySignupTokenCore(token, jwtSecret.value());
             } catch (error) {
                 if (error.code && error.message) {
                     // Error from core function
