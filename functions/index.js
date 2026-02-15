@@ -46,6 +46,7 @@ exports.sendFriendRequestNotification = notificationFunctions.sendFriendRequestN
 
 exports.deleteAccountImmediately = accountFunctions.deleteAccountImmediately;
 exports.adminDeleteUser = accountFunctions.adminDeleteUser;
+exports.adminDeleteAccounts = accountFunctions.adminDeleteAccounts;
 exports.scheduleAccountDeletion = accountFunctions.scheduleAccountDeletion;
 
 exports.cleanupExpiredVideos = videoFunctions.cleanupExpiredVideos;
