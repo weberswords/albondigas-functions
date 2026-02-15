@@ -1,0 +1,9 @@
+steps:
+  - name: node:18
+    dir: functions
+    entrypoint: npm
+    args: ['ci']
+
+  - name: node:18
+    entrypoint: npx
+    args: ['firebase-tools', 'deploy', '--only', 'functions', '--project', 'albondigas-8cfd9']
