@@ -1,4 +1,4 @@
-const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 
 module.exports = (firebaseHelper) => {
   const { admin, db } = firebaseHelper;
@@ -289,6 +289,51 @@ module.exports = (firebaseHelper) => {
         console.error(`❌ Admin deletion error for user ${uid}: ${error}`);
         throw new HttpsError('internal', error.message);
       }
+    }),
+
+    /**
+     * HTTP-triggered account deletion for use from Cloud Shell.
+     * Secured by IAM — remove public invoker access after deploying.
+     *
+     * Usage from Cloud Shell:
+     *   curl -X POST "https://us-central1-albondigas-8cfd9.cloudfunctions.net/adminDeleteAccounts" \
+     *     -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+     *     -H "Content-Type: application/json" \
+     *     -d '{"uids":["uid1","uid2"]}'
+     */
+    adminDeleteAccounts: onRequest({
+      region: 'us-central1',
+      maxInstances: 1,
+      timeoutSeconds: 300,
+      invoker: 'private',
+    }, async (req, res) => {
+      if (req.method !== 'POST') {
+        res.status(405).json({ error: 'POST only' });
+        return;
+      }
+
+      const uids = req.body.uids || (req.body.uid ? [req.body.uid] : []);
+      if (uids.length === 0) {
+        res.status(400).json({ error: 'Provide "uids" array or a single "uid"' });
+        return;
+      }
+
+      console.log(`Admin HTTP deletion request for ${uids.length} user(s): ${uids.join(', ')}`);
+
+      const results = [];
+      for (const uid of uids) {
+        try {
+          const result = await deleteUserData(uid, { deleteAuthUser: true });
+          results.push({ uid, success: true, ...result });
+        } catch (error) {
+          console.error(`Failed to delete ${uid}: ${error.message}`);
+          results.push({ uid, success: false, error: error.message });
+        }
+      }
+
+      const succeeded = results.filter(r => r.success).length;
+      const failed = results.filter(r => !r.success).length;
+      res.status(failed > 0 ? 207 : 200).json({ deleted: succeeded, failed, results });
     }),
 
     scheduleAccountDeletion: onCall({
