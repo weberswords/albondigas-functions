@@ -1,5 +1,6 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { defineSecret } = require('firebase-functions/params');
+const crypto = require('crypto');
 const mailgun = require('mailgun-js');
 
 const mailgunApiKey = defineSecret('MAILGUN_API_KEY');
@@ -32,8 +33,12 @@ module.exports = (firebaseHelper) => {
                     throw new HttpsError('invalid-argument', 'Email is required');
                 }
 
-                // Generate 6-digit code
-                const code = Math.floor(100000 + Math.random() * 900000).toString();
+                // Generate 6-digit code with a cryptographically secure RNG.
+                // Math.random is not suitable for security codes: its output is
+                // predictable, which would let an attacker guess a verification
+                // or password-reset code. crypto.randomInt is uniform over the
+                // half-open range, so [100000, 1000000) is every 6-digit code.
+                const code = crypto.randomInt(100000, 1000000).toString();
 
                 // Store code in Firestore
                 await db.collection('verificationCodes').doc(userId).set({
@@ -186,8 +191,12 @@ VLRB Team`;
                     return { success: true, message: 'If an account exists with this email, a reset code has been sent' };
                 }
 
-                // Generate 6-digit code
-                const code = Math.floor(100000 + Math.random() * 900000).toString();
+                // Generate 6-digit code with a cryptographically secure RNG.
+                // Math.random is not suitable for security codes: its output is
+                // predictable, which would let an attacker guess a verification
+                // or password-reset code. crypto.randomInt is uniform over the
+                // half-open range, so [100000, 1000000) is every 6-digit code.
+                const code = crypto.randomInt(100000, 1000000).toString();
 
                 // Store code in Firestore with expiration
                 await db.collection('passwordResetCodes').doc(userRecord.uid).set({
