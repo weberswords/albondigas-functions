@@ -39,6 +39,7 @@ exports.checkFriendshipStatus = friendFunctions.checkFriendshipStatus;
 exports.repairFriendshipState = friendFunctions.repairFriendshipState;
 exports.unblockUser = friendFunctions.unblockUser;
 exports.archiveVideosForChat = friendFunctions.archiveVideosForChat;
+exports.backfillFriendshipEventParticipants = friendFunctions.backfillFriendshipEventParticipants;
 
 
 exports.sendChatMessageNotification = notificationFunctions.sendChatMessageNotification;
