@@ -1,6 +1,6 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { defineSecret } = require('firebase-functions/params');
-const mailgun = require('mailgun-js');
+const mailgun = require('./mailer');
 
 const mailgunApiKey = defineSecret('MAILGUN_API_KEY');
 const mailgunDomain = "mail.vlrb.app"
