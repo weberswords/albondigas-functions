@@ -251,49 +251,8 @@ module.exports = (firebaseHelper) => {
     }),
 
     /**
-     * Admin-only function to delete any user by UID
-     * Use this when you can't log into the account (e.g., test users)
-     */
-    adminDeleteUser: onCall({
-      region: 'us-central1',
-      maxInstances: 10,
-      timeoutSeconds: 300
-    }, async (request) => {
-      if (!request.auth) {
-        throw new HttpsError('unauthenticated', 'You must be logged in');
-      }
-
-      // Verify admin status
-      const callerDoc = await db.collection('users').doc(request.auth.uid).get();
-      if (!callerDoc.exists || !callerDoc.data().isAdmin) {
-        throw new HttpsError('permission-denied', 'Admin access required');
-      }
-
-      const { uid } = request.data || {};
-
-      if (!uid || typeof uid !== 'string') {
-        throw new HttpsError('invalid-argument', 'A valid user UID is required');
-      }
-
-      // Prevent admins from accidentally deleting themselves through this endpoint
-      if (uid === request.auth.uid) {
-        throw new HttpsError('invalid-argument', 'Use deleteAccountImmediately to delete your own account');
-      }
-
-      console.log(`🔧 Admin ${request.auth.uid} initiating deletion of user ${uid}`);
-
-      try {
-        const results = await deleteUserData(uid, { deleteAuthUser: true });
-        return { success: true, ...results };
-      } catch (error) {
-        console.error(`❌ Admin deletion error for user ${uid}: ${error}`);
-        throw new HttpsError('internal', error.message);
-      }
-    }),
-
-    /**
      * HTTP-triggered account deletion for use from Cloud Shell.
-     * Secured by IAM — remove public invoker access after deploying.
+     * Secured by IAM: only Google accounts with a role on the project can call it.
      *
      * Usage from Cloud Shell:
      *   curl -X POST "https://us-central1-albondigas-8cfd9.cloudfunctions.net/adminDeleteAccounts" \

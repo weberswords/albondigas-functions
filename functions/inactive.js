@@ -1,5 +1,6 @@
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { adminFunction } = require('./admin');
 const { defineSecret } = require('firebase-functions/params');
 const mailgun = require('./mailer');
 
@@ -391,29 +392,18 @@ VLRB Team`;
         /**
          * Manual trigger for admins to run the inactive account check
          */
-        manualInactiveAccountCheck: onCall({
-            region: 'us-central1',
+        adminInactiveAccountCheck: adminFunction({
             maxInstances: 1,
             timeoutSeconds: 540,
             secrets: [mailgunApiKey]
-        }, async (request) => {
-            if (!request.auth) {
-                throw new HttpsError('unauthenticated', 'You must be logged in');
-            }
+        }, async (data, caller) => {
+            const { dryRun = true, batchSize = 50 } = data;
 
-            // Verify admin status
-            const userDoc = await db.collection('users').doc(request.auth.uid).get();
-            if (!userDoc.exists || !userDoc.data().isAdmin) {
-                throw new HttpsError('permission-denied', 'Admin access required');
-            }
-
-            const { dryRun = true, batchSize = 50 } = request.data || {};
-
-            console.log(`🔧 Manual inactive account check triggered by ${request.auth.uid}`);
+            console.log(`🔧 Manual inactive account check triggered by ${caller}`);
 
             try {
                 const results = await performInactiveAccountCheck({
-                    triggeredBy: `user:${request.auth.uid}`,
+                    triggeredBy: `user:${caller}`,
                     dryRun: dryRun,
                     batchSize: batchSize
                 });
@@ -477,20 +467,9 @@ VLRB Team`;
         /**
          * Get inactive account notification stats
          */
-        getInactiveAccountStats: onCall({
-            region: 'us-central1',
+        adminInactiveAccountStats: adminFunction({
             maxInstances: 10
-        }, async (request) => {
-            if (!request.auth) {
-                throw new HttpsError('unauthenticated', 'You must be logged in');
-            }
-
-            // Verify admin status
-            const userDoc = await db.collection('users').doc(request.auth.uid).get();
-            if (!userDoc.exists || !userDoc.data().isAdmin) {
-                throw new HttpsError('permission-denied', 'Admin access required');
-            }
-
+        }, async (data, caller) => {
             try {
                 const now = new Date();
                 const inactiveThreshold = new Date(now.getTime() - (INACTIVE_THRESHOLD_DAYS * 24 * 60 * 60 * 1000));
@@ -569,28 +548,17 @@ VLRB Team`;
         /**
          * Manual trigger for admins to execute scheduled deletions
          */
-        manualExecuteScheduledDeletions: onCall({
-            region: 'us-central1',
+        adminExecuteScheduledDeletions: adminFunction({
             maxInstances: 1,
             timeoutSeconds: 540
-        }, async (request) => {
-            if (!request.auth) {
-                throw new HttpsError('unauthenticated', 'You must be logged in');
-            }
+        }, async (data, caller) => {
+            const { dryRun = true, batchSize = 5 } = data;
 
-            // Verify admin status
-            const userDoc = await db.collection('users').doc(request.auth.uid).get();
-            if (!userDoc.exists || !userDoc.data().isAdmin) {
-                throw new HttpsError('permission-denied', 'Admin access required');
-            }
-
-            const { dryRun = true, batchSize = 5 } = request.data || {};
-
-            console.log(`🔧 Manual scheduled deletion triggered by ${request.auth.uid}`);
+            console.log(`🔧 Manual scheduled deletion triggered by ${caller}`);
 
             try {
                 const results = await performScheduledDeletions({
-                    triggeredBy: `user:${request.auth.uid}`,
+                    triggeredBy: `user:${caller}`,
                     dryRun: dryRun,
                     batchSize: batchSize
                 });

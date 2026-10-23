@@ -38,23 +38,22 @@ exports.blockUser = friendFunctions.blockUser;
 exports.checkFriendshipStatus = friendFunctions.checkFriendshipStatus;
 exports.repairFriendshipState = friendFunctions.repairFriendshipState;
 exports.unblockUser = friendFunctions.unblockUser;
-exports.archiveVideosForChat = friendFunctions.archiveVideosForChat;
-exports.backfillFriendshipEventParticipants = friendFunctions.backfillFriendshipEventParticipants;
+exports.adminArchiveVideosForChat = friendFunctions.adminArchiveVideosForChat;
+exports.adminBackfillFriendshipEventParticipants = friendFunctions.adminBackfillFriendshipEventParticipants;
 
 
 exports.sendChatMessageNotification = notificationFunctions.sendChatMessageNotification;
 exports.sendFriendRequestNotification = notificationFunctions.sendFriendRequestNotification;
 
 exports.deleteAccountImmediately = accountFunctions.deleteAccountImmediately;
-exports.adminDeleteUser = accountFunctions.adminDeleteUser;
 exports.adminDeleteAccounts = accountFunctions.adminDeleteAccounts;
 exports.scheduleAccountDeletion = accountFunctions.scheduleAccountDeletion;
 
 exports.cleanupExpiredVideos = videoFunctions.cleanupExpiredVideos;
 exports.cleanupExpiredArchivedVideos = videoFunctions.cleanupExpiredArchivedVideos;
-exports.manualVideoCleanup = videoFunctions.manualVideoCleanup;
-exports.manualArchivedVideoCleanup = videoFunctions.manualArchivedVideoCleanup;
-exports.getCleanupStats = videoFunctions.getCleanupStats;
+exports.adminVideoCleanup = videoFunctions.adminVideoCleanup;
+exports.adminArchivedVideoCleanup = videoFunctions.adminArchivedVideoCleanup;
+exports.adminCleanupStats = videoFunctions.adminCleanupStats;
 exports.deleteVideo = videoFunctions.deleteVideo;
 
 exports.sendVerificationCode = verificationFunctions.sendVerificationCode;
@@ -73,10 +72,10 @@ exports.checkSignupVerification = signupFunctions.checkSignupVerification;
 exports.cleanupPendingRegistrations = signupFunctions.cleanupPendingRegistrations;
 
 exports.checkInactiveAccounts = inactiveFunctions.checkInactiveAccounts;
-exports.manualInactiveAccountCheck = inactiveFunctions.manualInactiveAccountCheck;
+exports.adminInactiveAccountCheck = inactiveFunctions.adminInactiveAccountCheck;
 exports.updateLastActive = inactiveFunctions.updateLastActive;
-exports.getInactiveAccountStats = inactiveFunctions.getInactiveAccountStats;
+exports.adminInactiveAccountStats = inactiveFunctions.adminInactiveAccountStats;
 exports.executeScheduledDeletions = inactiveFunctions.executeScheduledDeletions;
-exports.manualExecuteScheduledDeletions = inactiveFunctions.manualExecuteScheduledDeletions;
+exports.adminExecuteScheduledDeletions = inactiveFunctions.adminExecuteScheduledDeletions;
 
 exports.ingestLogs = loggingFunctions.ingestLogs;

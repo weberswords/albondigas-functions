@@ -1,4 +1,5 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { adminFunction } = require('./admin');
 
 
 module.exports = (firebaseHelper) => {
@@ -592,22 +593,11 @@ sendFriendRequest: onCall(async (request) => {
     }),
 
     // Helper function exposed for potential direct calls
-    archiveVideosForChat: onCall({
-      region: 'us-central1',
+    adminArchiveVideosForChat: adminFunction({
       maxInstances: 5,
       timeoutSeconds: 120
-    }, async (request) => {
-      if (!request.auth) {
-        throw new HttpsError('unauthenticated', 'You must be logged in');
-      }
-
-      // Admin only or system call
-      const userDoc = await db.collection('users').doc(request.auth.uid).get();
-      if (!userDoc.exists || !userDoc.data().isAdmin) {
-        throw new HttpsError('permission-denied', 'Admin access required');
-      }
-
-      const { chatId, senderId, reason = 'manual' } = request.data;
+    }, async (data, caller) => {
+      const { chatId, senderId, reason = 'manual' } = data;
       if (!chatId || !senderId) {
         throw new HttpsError('invalid-argument', 'chatId and senderId are required');
       }
@@ -1081,28 +1071,18 @@ sendFriendRequest: onCall(async (request) => {
     }),
 
 
-    // One-time migration, admin only. Backfills the participantIds array on
+    // One-time migration, IAM only (see admin.js). Backfills the participantIds array on
     // friendshipEvents created before the field existed. The tightened read
     // rule scopes access to the two people involved via participantIds, so
     // historical events need it to stay readable to them. Idempotent, and it
     // supports a dryRun preview. Run this after deploying the write change and
     // before tightening the Firestore rule, so no event becomes unreadable in
-    // the gap. Pass { dryRun: true } first to see the counts without writing.
-    backfillFriendshipEventParticipants: onCall({
-      region: 'us-central1',
+    // the gap. Send {"dryRun":true} first to see the counts without writing.
+    adminBackfillFriendshipEventParticipants: adminFunction({
       maxInstances: 1,
       timeoutSeconds: 540
-    }, async (request) => {
-      if (!request.auth) {
-        throw new HttpsError('unauthenticated', 'You must be logged in');
-      }
-
-      const callerDoc = await db.collection('users').doc(request.auth.uid).get();
-      if (!callerDoc.exists || !callerDoc.data().isAdmin) {
-        throw new HttpsError('permission-denied', 'Admin access required');
-      }
-
-      const dryRun = request.data && request.data.dryRun === true;
+    }, async (data, caller) => {
+      const dryRun = data.dryRun === true;
       const pageSize = 300; // stays under the 500-op batch limit
       let scanned = 0;
       let updated = 0;
