@@ -1,7 +1,7 @@
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { defineSecret } = require('firebase-functions/params');
-const mailgun = require('mailgun-js');
+const mailgun = require('./mailer');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
