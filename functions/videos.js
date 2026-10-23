@@ -1,5 +1,6 @@
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { adminFunction } = require('./admin');
 
 module.exports = (firebaseHelper) => {
   const { admin, db } = firebaseHelper;
@@ -367,28 +368,18 @@ module.exports = (firebaseHelper) => {
     }),
     
     // Manual trigger function for regular video cleanup
-    manualVideoCleanup: onCall({
-      region: 'us-central1',
+    adminVideoCleanup: adminFunction({
       maxInstances: 1,
       timeoutSeconds: 540
-    }, async (request) => {
-      if (!request.auth) {
-        throw new HttpsError('unauthenticated', 'You must be logged in');
-      }
+    }, async (data, caller) => {
+      const { dryRun = false, batchSize = 100 } = data;
 
-      const { dryRun = false, batchSize = 100 } = request.data || {};
+      console.log(`🔧 Manual cleanup triggered by ${caller}`);
 
-      console.log(`🔧 Manual cleanup triggered by ${request.auth.uid}`);
-
-      // Add admin check
-      const userDoc = await db.collection('users').doc(request.auth.uid).get();
-      if (!userDoc.exists || !userDoc.data().isAdmin) {
-        throw new HttpsError('permission-denied', 'Admin access required');
-      }
 
       try {
         const results = await performVideoCleanup({
-          triggeredBy: `user:${request.auth.uid}`,
+          triggeredBy: `user:${caller}`,
           dryRun: dryRun,
           batchSize: batchSize
         });
@@ -401,28 +392,18 @@ module.exports = (firebaseHelper) => {
     }),
 
     // Manual trigger function for archived video cleanup
-    manualArchivedVideoCleanup: onCall({
-      region: 'us-central1',
+    adminArchivedVideoCleanup: adminFunction({
       maxInstances: 1,
       timeoutSeconds: 540
-    }, async (request) => {
-      if (!request.auth) {
-        throw new HttpsError('unauthenticated', 'You must be logged in');
-      }
+    }, async (data, caller) => {
+      const { dryRun = false, batchSize = 100 } = data;
 
-      const { dryRun = false, batchSize = 100 } = request.data || {};
+      console.log(`🔧 Manual archived cleanup triggered by ${caller}`);
 
-      console.log(`🔧 Manual archived cleanup triggered by ${request.auth.uid}`);
-
-      // Add admin check
-      const userDoc = await db.collection('users').doc(request.auth.uid).get();
-      if (!userDoc.exists || !userDoc.data().isAdmin) {
-        throw new HttpsError('permission-denied', 'Admin access required');
-      }
 
       try {
         const results = await performArchivedVideoCleanup({
-          triggeredBy: `user:${request.auth.uid}`,
+          triggeredBy: `user:${caller}`,
           dryRun: dryRun,
           batchSize: batchSize
         });
@@ -435,14 +416,9 @@ module.exports = (firebaseHelper) => {
     }),
     
     // Optional: Get cleanup stats
-    getCleanupStats: onCall({
-      region: 'us-central1',
+    adminCleanupStats: adminFunction({
       maxInstances: 10
-    }, async (request) => {
-      if (!request.auth) {
-        throw new HttpsError('unauthenticated', 'You must be logged in');
-      }
-
+    }, async (data, caller) => {
       try {
         const now = admin.firestore.Timestamp.now();
 
