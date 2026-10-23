@@ -540,6 +540,9 @@ sendFriendRequest: onCall(async (request) => {
             action: 'unfriend',
             initiatorId: userId,
             targetId: otherUserId,
+            // Sorted array of the two parties, so the read rule can scope this
+            // event to the people involved (mirrors friendships.userIds).
+            participantIds: [userId, otherUserId].sort(),
             timestamp: admin.firestore.FieldValue.serverTimestamp()
           });
 
@@ -894,6 +897,9 @@ sendFriendRequest: onCall(async (request) => {
             action: 'unblock',
             initiatorId: unblockingUserId,
             targetId: userToUnblockId,
+            // Sorted array of the two parties, so the read rule can scope this
+            // event to the people involved (mirrors friendships.userIds).
+            participantIds: [unblockingUserId, userToUnblockId].sort(),
             timestamp: admin.firestore.FieldValue.serverTimestamp()
           });
 
@@ -1072,6 +1078,82 @@ sendFriendRequest: onCall(async (request) => {
         console.error(`❌ Error repairing friendship: ${error}`);
         return { success: false, error: error.message };
       }
+    }),
+
+
+    // One-time migration, admin only. Backfills the participantIds array on
+    // friendshipEvents created before the field existed. The tightened read
+    // rule scopes access to the two people involved via participantIds, so
+    // historical events need it to stay readable to them. Idempotent, and it
+    // supports a dryRun preview. Run this after deploying the write change and
+    // before tightening the Firestore rule, so no event becomes unreadable in
+    // the gap. Pass { dryRun: true } first to see the counts without writing.
+    backfillFriendshipEventParticipants: onCall({
+      region: 'us-central1',
+      maxInstances: 1,
+      timeoutSeconds: 540
+    }, async (request) => {
+      if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'You must be logged in');
+      }
+
+      const callerDoc = await db.collection('users').doc(request.auth.uid).get();
+      if (!callerDoc.exists || !callerDoc.data().isAdmin) {
+        throw new HttpsError('permission-denied', 'Admin access required');
+      }
+
+      const dryRun = request.data && request.data.dryRun === true;
+      const pageSize = 300; // stays under the 500-op batch limit
+      let scanned = 0;
+      let updated = 0;
+      let skipped = 0;
+      let last = null;
+
+      while (true) {
+        let query = db.collection('friendshipEvents').orderBy('__name__').limit(pageSize);
+        if (last) {
+          query = query.startAfter(last);
+        }
+
+        const snap = await query.get();
+        if (snap.empty) {
+          break;
+        }
+
+        const batch = db.batch();
+        let batchWrites = 0;
+
+        snap.forEach(doc => {
+          scanned++;
+          const data = doc.data();
+          const alreadySet = Array.isArray(data.participantIds) && data.participantIds.length > 0;
+          const ids = [data.initiatorId, data.targetId]
+            .filter(id => typeof id === 'string' && id.length > 0);
+
+          if (alreadySet || ids.length === 0) {
+            skipped++;
+            return;
+          }
+
+          updated++;
+          if (!dryRun) {
+            batch.update(doc.ref, { participantIds: ids.sort() });
+            batchWrites++;
+          }
+        });
+
+        if (!dryRun && batchWrites > 0) {
+          await batch.commit();
+        }
+
+        last = snap.docs[snap.docs.length - 1];
+        if (snap.size < pageSize) {
+          break;
+        }
+      }
+
+      console.log(`participantIds backfill: scanned ${scanned}, updated ${updated}, skipped ${skipped}, dryRun ${dryRun}`);
+      return { success: true, dryRun, scanned, updated, skipped };
     })
 
 
