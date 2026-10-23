@@ -10,7 +10,13 @@ firebase-debug.*.log*
 # Firebase cache
 .firebase/
 
+# Service account keys, under the name index.js loads and under the names
+# Firebase and Google Cloud give a downloaded key
 firebase_admin.json
+*firebase-adminsdk*.json
+*Admin SDK*.json
+*service-account*.json
+*serviceAccount*.json
 
 # Firebase config
 
