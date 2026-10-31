@@ -2,11 +2,11 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 steps:
-  - name: node:20
+  - name: node:24
     dir: functions
     entrypoint: npm
     args: ['ci']
 
-  - name: node:20
+  - name: node:24
     entrypoint: npx
     args: ['firebase-tools', 'deploy', '--only', 'functions', '--project', 'albondigas-8cfd9']
