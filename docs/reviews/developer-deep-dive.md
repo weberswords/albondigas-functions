@@ -271,6 +271,9 @@ avoidable key-management liability.
 - *Fix:* Call `admin.initializeApp()` with no explicit credential and let the
   runtime service account supply credentials, keeping only the `storageBucket`
   option. This removes a standing secret from the deployment.
+- *Status (2026-11-01):* Fixed. `index.js` uses the runtime credentials. The
+  runtime account holds Service Account Token Creator on itself so
+  `createCustomToken` can sign through IAM.
 
 **S9. Firestore triggers have no idempotency guard.**
 `functions/notifications.js:8-135`. `onDocumentCreated` delivers at least once,
