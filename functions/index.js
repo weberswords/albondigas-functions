@@ -1,11 +1,10 @@
 const admin = require('firebase-admin');
 
-// Import service account
-const serviceAccount = require('./firebase_admin.json');
-
-// Initialize admin
+// Initialize admin with the runtime's own credentials (the functions' service
+// account), so no private key file has to live on disk or in the deploy.
+// createCustomToken signs through the IAM signBlob API, which needs that
+// account to hold Service Account Token Creator on itself.
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
   storageBucket: "gs://albondigas-8cfd9.appspot.com"
 });
 
