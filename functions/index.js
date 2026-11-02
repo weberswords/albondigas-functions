@@ -82,3 +82,4 @@ exports.ingestLogs = loggingFunctions.ingestLogs;
 
 exports.notifyOwnerOfReport = reportFunctions.notifyOwnerOfReport;
 exports.moveReportedVideo = reportFunctions.moveReportedVideo;
+exports.recordReportOutcome = reportFunctions.recordReportOutcome;

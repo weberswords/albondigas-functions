@@ -3,6 +3,13 @@ const assert = require('node:assert/strict');
 
 const reports = require('../reports.js');
 const {
+  FALSE_REPORT_ALERT,
+  OUTCOMES,
+  buildFalseReportAlert,
+  checkOriginal,
+  describeHistory,
+  outcomeChange,
+  storagePathFromUrl,
   HOURLY_EMAIL_CAP,
   REASON_LABELS,
   buildReportEmail,
@@ -35,7 +42,9 @@ function report(overrides = {}) {
 }
 
 test('notifyOwnerOfReport listens for new reports, and moveReportedVideo for uploads', () => {
-  const { notifyOwnerOfReport, moveReportedVideo } = reports({ admin: {}, db: {} });
+  const { notifyOwnerOfReport, moveReportedVideo, recordReportOutcome } = reports({ admin: {}, db: {} });
+  assert.match(recordReportOutcome.__endpoint.eventTrigger.eventType, /document\.v1\.updated/);
+  assert.equal(recordReportOutcome.__endpoint.eventTrigger.eventFilterPathPatterns.document, 'reports/{reportId}');
   assert.ok(notifyOwnerOfReport.__endpoint.eventTrigger, 'expected an event trigger');
   assert.match(notifyOwnerOfReport.__endpoint.eventTrigger.eventType, /document\.v1\.created/);
   assert.equal(notifyOwnerOfReport.__endpoint.eventTrigger.eventFilterPathPatterns.document, 'reports/{reportId}');
@@ -113,4 +122,73 @@ test('an upload is kept only for the reporter\'s own report that shares a video'
   assert.equal(uploadMatchesReport(upload, null), false);
   assert.equal(uploadMatchesReport(upload, report({ reporterUserId: 'mallory-uid' })), false);
   assert.equal(uploadMatchesReport(upload, report({ videoAttached: false })), false);
+});
+
+// A Firestore Timestamp stand-in
+const at = (iso) => ({ toDate: () => new Date(iso) });
+const URL_PATH = 'encrypted_videos/chat-ab/5F0C.enc';
+const downloadUrl = `https://firebasestorage.googleapis.com/v0/b/albondigas-8cfd9.appspot.com/o/${encodeURIComponent(URL_PATH)}?alt=media&token=abc`;
+
+test('the Storage path comes out of a download URL', () => {
+  assert.equal(storagePathFromUrl(downloadUrl), URL_PATH);
+  assert.equal(storagePathFromUrl(''), null);
+  assert.equal(storagePathFromUrl(undefined), null);
+  assert.equal(storagePathFromUrl('file:///var/mobile/x.mp4'), null);
+});
+
+test('an original stored before its message is fine', () => {
+  const original = checkOriginal(
+    { encryptedVideoUrl: downloadUrl, createdAt: at('2026-11-02T10:00:00Z') },
+    { timeCreated: '2026-11-02T09:59:30Z', md5Hash: 'abc==', size: '2048' }
+  );
+  assert.equal(original.found, true);
+  assert.equal(original.path, URL_PATH);
+  assert.equal(original.md5Hash, 'abc==');
+  assert.equal(original.size, 2048);
+  assert.equal(original.replacedAfterSend, false);
+});
+
+test('an original stored long after its message is flagged for a person to check', () => {
+  const original = checkOriginal(
+    { encryptedVideoUrl: downloadUrl, createdAt: at('2026-11-02T10:00:00Z') },
+    { timeCreated: '2026-11-03T10:00:00Z' }
+  );
+  assert.equal(original.replacedAfterSend, true);
+  assert.equal(original.minutesAfterMessage, 1440);
+  const { text } = buildReportEmail(REPORT_ID, report(), null, original);
+  assert.match(text, /Original video: Stored 1440 minutes after the message was sent\. It may have been replaced/);
+});
+
+test('a missing original says so', () => {
+  assert.deepEqual(checkOriginal({ encryptedVideoUrl: downloadUrl }, null), { found: false, path: URL_PATH });
+  assert.deepEqual(checkOriginal(undefined, null), { found: false, path: null });
+  const { text } = buildReportEmail(REPORT_ID, report(), null, { found: false });
+  assert.match(text, /Original video: Not found in Storage/);
+});
+
+test("the email says how the reporter's earlier reports were judged, without naming them", () => {
+  assert.equal(describeHistory(null), 'None reviewed yet');
+  assert.equal(describeHistory({ reportsReviewed: 4, falseReports: 2 }), '4 reviewed, 2 false');
+  assert.match(describeHistory({ reportsReviewed: 4, falseReports: 3, reportingSuspended: true }), /turned off/);
+  const { text } = buildReportEmail(REPORT_ID, report(), { reportsReviewed: 4, falseReports: 2 });
+  assert.match(text, /This person's earlier reports: 4 reviewed, 2 false/);
+  assert.doesNotMatch(text, /alice-uid/);
+});
+
+test('outcomes count once, and corrections move the false-report count', () => {
+  assert.deepEqual(OUTCOMES, ['action_taken', 'no_action', 'false_report']);
+  assert.equal(outcomeChange({}, {}), null);
+  assert.equal(outcomeChange({}, { outcome: 'made_up' }), null);
+  assert.equal(outcomeChange({ outcome: 'no_action' }, { outcome: 'no_action' }), null);
+  assert.deepEqual(outcomeChange({}, { outcome: 'false_report' }), { outcome: 'false_report', reviewedDelta: 1, falseDelta: 1 });
+  assert.deepEqual(outcomeChange({}, { outcome: 'action_taken' }), { outcome: 'action_taken', reviewedDelta: 1, falseDelta: 0 });
+  assert.deepEqual(outcomeChange({ outcome: 'false_report' }, { outcome: 'no_action' }), { outcome: 'no_action', reviewedDelta: 0, falseDelta: -1 });
+});
+
+test('the false-report alert names the report, not the person, and changes nothing itself', () => {
+  const { subject, text } = buildFalseReportAlert(REPORT_ID, FALSE_REPORT_ALERT);
+  assert.match(subject, /false 3 times/);
+  assert.match(text, new RegExp(REPORT_ID));
+  assert.match(text, /Nothing changes until you do/);
+  assert.doesNotMatch(text, /alice-uid/);
 });
