@@ -119,11 +119,40 @@ test('the report page shows history, a replaced original, and the outcome button
   assert.doesNotMatch(html, /<script/i);
 });
 
-test('a child-safety report shows the steps instead of the video', () => {
-  const html = renderReport({ report: report({ reason: 'child_safety' }), reported: null, reporter: null, moderation: null }, TOKEN);
+test('a child-safety report shows the steps on the page instead of the video', () => {
+  const html = renderReport({
+    report: report({ reason: 'child_safety' }),
+    reported: { displayName: 'Ben Test' },
+    reporter: null,
+    moderation: null,
+  }, TOKEN);
   assert.doesNotMatch(html, /<video/);
-  assert.match(html, /NCMEC CyberTipline/);
-  assert.match(html, /Don't download it/);
+  assert.match(html, /Child safety: what to do now/);
+  assert.match(html, /href="https:\/\/report\.cybertip\.org"/);
+  assert.match(html, /Don't open, download, or forward the video/);
+  assert.match(html, /Disable account\. Don't delete it/);
+  assert.match(html, /at least a year/);
+  assert.doesNotMatch(html, /docs\/REPORTING\.md/, 'Everything needed is on the page');
+  // The details NCMEC asks for, filled in
+  assert.match(html, new RegExp(`<dd>${ID}</dd>`));
+  assert.match(html, /Ben Test \(user ID bob-uid\)/);
+  assert.match(html, /chats\/chat-ab\/messages\/message-1/);
+  assert.match(html, new RegExp(`Kept at reportEvidence/${ID}\\.mp4`));
+});
+
+test('a child-safety profile report gets the steps too, and says no video was shared', () => {
+  const html = renderReport({
+    report: report({ reason: 'child_safety', source: 'profile', videoAttached: false, videoStatus: 'none', evidencePath: undefined }),
+    reported: null, reporter: null, moderation: null,
+  }, TOKEN);
+  assert.match(html, /Child safety: what to do now/);
+  assert.match(html, /No video was shared/);
+  assert.doesNotMatch(html, /Message<\/dt>/);
+});
+
+test('other reports don\'t show the child-safety steps', () => {
+  const html = renderReport({ report: report(), reported: null, reporter: null, moderation: null }, TOKEN);
+  assert.doesNotMatch(html, /Child safety: what to do now/);
 });
 
 test('an empty queue says so', () => {

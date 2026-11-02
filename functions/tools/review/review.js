@@ -138,6 +138,8 @@ ul.list a { display: flex; justify-content: space-between; gap: 12px; padding: 1
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
 dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 .box { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin: 16px 0; }
+.steps { border-color: var(--urgent); } .steps ol { padding-left: 20px; } .steps li { margin: 6px 0; }
+h3 { font-size: 16px; margin: 16px 0 8px; }
 video { width: 100%; max-height: 70vh; border-radius: 8px; background: #000; }
 form.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 textarea { width: 100%; min-height: 72px; font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
@@ -184,13 +186,49 @@ function videoSection(report, token) {
       return `<video controls preload="metadata" src="${escapeHtml(link(`/video/${report.id}`, token))}"></video>
 <p class="muted">The reporter's decrypted copy. It streams from Storage and isn't saved on this Mac.</p>`;
     case 'withheld':
-      return `<p class="urgent">This page doesn't show child-safety videos.</p>
-<p>Don't download it. Report it to the NCMEC CyberTipline, leave <code>${escapeHtml(report.evidencePath || 'reportEvidence/')}</code> where it is, and follow the child-safety steps in albondigas <code>docs/REPORTING.md</code>.</p>`;
+      return '<p class="urgent">This page doesn\'t show child-safety videos. Follow the steps above.</p>';
     case 'awaiting':
       return '<p class="muted">The reporter chose to share the video, but it hasn\'t arrived. They may have stopped it.</p>';
     default:
       return '<p class="muted">No video was shared with this report.</p>';
   }
+}
+
+const CYBERTIPLINE_URL = 'https://report.cybertip.org';
+
+// Where the evidence stands, in words for the child-safety steps
+function evidenceStatus(report) {
+  if (report.videoStatus === 'stored' && report.evidencePath) return `Kept at ${report.evidencePath}`;
+  if (report.videoAttached) return 'The reporter chose to share it, but it hasn\'t arrived';
+  return 'No video was shared';
+}
+
+// The steps for a report about a child, with the details NCMEC asks for
+// filled in, so the owner never has to look them up mid-crisis. Shown for
+// every child-safety report, with or without a video.
+function childSafetySection(report, reported) {
+  const details = [
+    ['vlrb report', report.id],
+    ['Reported account', `${reported?.displayName || 'No profile'} (user ID ${report.reportedUserId})`],
+    ['Reported at', `${formatTime(report.reportedAt)} (${new Date(millis(report.reportedAt) || 0).toISOString()})`],
+    ['About', report.source === 'video' ? 'A video sent in a private, end-to-end encrypted chat' : 'A profile'],
+    ...(report.source === 'video' ? [['Message', `chats/${report.chatId}/messages/${report.messageId}`]] : []),
+    ['Evidence', evidenceStatus(report)],
+  ];
+  return `<section class="box steps" aria-labelledby="cs-steps">
+<h2 id="cs-steps" class="urgent">Child safety: what to do now</h2>
+<ol>
+<li><strong>If a child is in danger right now, call 911</strong> (or local police) first.</li>
+<li><strong>Don't open, download, or forward the video.</strong> Copying it can be a crime even for you, and this page won't play it. It stays in Storage, where only the project can reach it.</li>
+<li><strong>Report it to the <a href="${CYBERTIPLINE_URL}" rel="noreferrer">NCMEC CyberTipline</a> within a day.</strong> US law (18 U.S.C. § 2258A) requires it once you know. Give them the details below. Tell them you're keeping the video and ask how they want it; don't email it.</li>
+<li><strong>Write the CyberTipline report number</strong> in the note below, then choose <strong>Took Action</strong>.</li>
+<li><strong>Stop the account, but keep its data.</strong> In the Firebase console, go to Authentication, find the user ID below, and choose Disable account. Don't delete it.</li>
+<li><strong>Keep everything for at least a year</strong> after you report: this report, the video, and the account's data. The REPORT Act requires it.</li>
+<li><strong>Talk to a lawyer</strong> about anything beyond these steps.</li>
+</ol>
+<h3>Details for the CyberTipline</h3>
+<dl>${details.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl>
+</section>`;
 }
 
 function renderReport({ report, reported, reporter, moderation }, token) {
@@ -200,6 +238,7 @@ function renderReport({ report, reported, reporter, moderation }, token) {
   const suspended = moderation?.reportingSuspended === true;
   return page(`Report ${report.id.slice(0, 8)}`, `<p><a href="${escapeHtml(link('/', token))}">← All reports</a></p>
 <h1>${isUrgent(report) ? '<span class="urgent">Urgent · </span>' : ''}${escapeHtml(reasonLabel(report))}</h1>
+${report.reason === 'child_safety' ? childSafetySection(report, reported) : ''}
 <div class="box"><dl>
 <dt>About</dt><dd>${report.source === 'video' ? 'A video' : 'A profile'}</dd>
 <dt>Sent</dt><dd>${escapeHtml(formatTime(report.reportedAt))}</dd>
