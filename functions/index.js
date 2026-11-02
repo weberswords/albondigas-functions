@@ -25,6 +25,7 @@ const signupFunctions = require('./signup.js')(firebaseHelper);
 // Pass accountFunctions to inactive so it can use deleteUserData
 const inactiveFunctions = require('./inactive.js')(firebaseHelper, accountFunctions);
 const loggingFunctions = require('./logging.js')(firebaseHelper);
+const reportFunctions = require('./reports.js')(firebaseHelper);
 
 
 
@@ -78,3 +79,6 @@ exports.executeScheduledDeletions = inactiveFunctions.executeScheduledDeletions;
 exports.adminExecuteScheduledDeletions = inactiveFunctions.adminExecuteScheduledDeletions;
 
 exports.ingestLogs = loggingFunctions.ingestLogs;
+
+exports.notifyOwnerOfReport = reportFunctions.notifyOwnerOfReport;
+exports.moveReportedVideo = reportFunctions.moveReportedVideo;
