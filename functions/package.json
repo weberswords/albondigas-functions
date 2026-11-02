@@ -7,7 +7,8 @@
     "start": "npm run shell",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "review": "node tools/review/server.js"
   },
   "engines": {
     "node": "24"
