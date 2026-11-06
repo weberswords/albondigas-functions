@@ -1,0 +1,9 @@
+{
+  "firestore": { "rules": "deny-all.firestore.rules" },
+  "storage": { "rules": "deny-all.storage.rules" },
+  "emulators": {
+    "firestore": { "port": 8288 },
+    "storage": { "port": 9298 },
+    "ui": { "enabled": false }
+  }
+}

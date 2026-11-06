@@ -26,6 +26,7 @@ const signupFunctions = require('./signup.js')(firebaseHelper);
 const inactiveFunctions = require('./inactive.js')(firebaseHelper, accountFunctions);
 const loggingFunctions = require('./logging.js')(firebaseHelper);
 const reportFunctions = require('./reports.js')(firebaseHelper);
+const errorReportFunctions = require('./errorReports.js')(firebaseHelper);
 
 
 
@@ -83,3 +84,5 @@ exports.ingestLogs = loggingFunctions.ingestLogs;
 exports.notifyOwnerOfReport = reportFunctions.notifyOwnerOfReport;
 exports.moveReportedVideo = reportFunctions.moveReportedVideo;
 exports.recordReportOutcome = reportFunctions.recordReportOutcome;
+
+exports.sendErrorReportDigest = errorReportFunctions.sendErrorReportDigest;

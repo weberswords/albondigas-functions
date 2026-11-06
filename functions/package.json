@@ -8,7 +8,8 @@
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
     "test": "node --test test/*.test.js",
-    "review": "node tools/review/server.js"
+    "review": "node tools/review/server.js",
+    "test:emulator": "firebase emulators:exec --config test/emulator/firebase.json --only firestore,storage --project demo-vlrb \"node --test test/emulator/errorReportDigest.test.js\""
   },
   "engines": {
     "node": "24"
