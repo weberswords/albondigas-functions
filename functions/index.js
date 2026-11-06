@@ -4,9 +4,21 @@ const admin = require('firebase-admin');
 // account), so no private key file has to live on disk or in the deploy.
 // createCustomToken signs through the IAM signBlob API, which needs that
 // account to hold Service Account Token Creator on itself.
+// Passing options turns off the SDK's own read of FIREBASE_CONFIG, so take
+// the Realtime Database URL from it here (presence.js writes friendsOf/).
+const firebaseConfig = parseFirebaseConfig(process.env.FIREBASE_CONFIG);
 admin.initializeApp({
-  storageBucket: "gs://albondigas-8cfd9.appspot.com"
+  storageBucket: "gs://albondigas-8cfd9.appspot.com",
+  ...(firebaseConfig.databaseURL ? { databaseURL: firebaseConfig.databaseURL } : {})
 });
+
+function parseFirebaseConfig(value) {
+  try {
+    return value ? JSON.parse(value) : {};
+  } catch (error) {
+    return {};
+  }
+}
 
 // Initialize Firestore ONCE
 const db = admin.firestore();
@@ -26,6 +38,7 @@ const signupFunctions = require('./signup.js')(firebaseHelper);
 const inactiveFunctions = require('./inactive.js')(firebaseHelper, accountFunctions);
 const loggingFunctions = require('./logging.js')(firebaseHelper);
 const reportFunctions = require('./reports.js')(firebaseHelper);
+const presenceFunctions = require('./presence.js')(firebaseHelper);
 const errorReportFunctions = require('./errorReports.js')(firebaseHelper);
 
 
@@ -85,4 +98,6 @@ exports.notifyOwnerOfReport = reportFunctions.notifyOwnerOfReport;
 exports.moveReportedVideo = reportFunctions.moveReportedVideo;
 exports.recordReportOutcome = reportFunctions.recordReportOutcome;
 
+exports.mirrorFriendsOf = presenceFunctions.mirrorFriendsOf;
+exports.adminBackfillFriendsOf = presenceFunctions.adminBackfillFriendsOf;
 exports.sendErrorReportDigest = errorReportFunctions.sendErrorReportDigest;
