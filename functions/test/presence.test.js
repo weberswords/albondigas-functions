@@ -111,6 +111,10 @@ test('the pair comes from the fields, or the ID when they are missing', () => {
   assert.equal(friendshipPair('group_a_b', {}), null);
   assert.equal(friendshipPair('alice_alice', {}), null);
   assert.equal(friendshipPair('al.ice_bob', {}), null);
+  // A newline pasted into a field falls back to the friendship's ID.
+  assert.deepEqual(friendshipPair('alice_bob', { user1Id: 'alice', user2Id: 'bob\n' }), ['alice', 'bob']);
+  assert.equal(isValidUid('bob\n'), false);
+  assert.equal(isValidUid('bo\u007Fb'), false);
 });
 
 test('a key Realtime Database would reject is not a user ID', () => {
