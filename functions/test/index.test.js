@@ -11,3 +11,13 @@ test('index.js does not load a service-account key file', () => {
   assert.doesNotMatch(source, /firebase_admin\.json/);
   assert.doesNotMatch(source, /credential\.cert\(/);
 });
+
+// presence.js writes Realtime Database, and passing options to initializeApp
+// stops the SDK reading FIREBASE_CONFIG itself, so index.js must pass the URL.
+test('index.js passes the Realtime Database URL from FIREBASE_CONFIG', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+  assert.match(source, /process\.env\.FIREBASE_CONFIG/);
+  assert.match(source, /databaseURL: firebaseConfig\.databaseURL/);
+  assert.match(source, /exports\.mirrorFriendsOf = presenceFunctions\.mirrorFriendsOf/);
+  assert.match(source, /exports\.adminBackfillFriendsOf = presenceFunctions\.adminBackfillFriendsOf/);
+});
