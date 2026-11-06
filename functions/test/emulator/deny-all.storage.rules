@@ -1,0 +1,10 @@
+rules_version = '2';
+// The emulator check writes with the Admin SDK, which skips rules. The real
+// rules for errorReports/ are in the albondigas repo (storage.rules).
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

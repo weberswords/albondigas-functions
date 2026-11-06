@@ -39,6 +39,7 @@ const inactiveFunctions = require('./inactive.js')(firebaseHelper, accountFuncti
 const loggingFunctions = require('./logging.js')(firebaseHelper);
 const reportFunctions = require('./reports.js')(firebaseHelper);
 const presenceFunctions = require('./presence.js')(firebaseHelper);
+const errorReportFunctions = require('./errorReports.js')(firebaseHelper);
 
 
 
@@ -99,3 +100,4 @@ exports.recordReportOutcome = reportFunctions.recordReportOutcome;
 
 exports.mirrorFriendsOf = presenceFunctions.mirrorFriendsOf;
 exports.adminBackfillFriendsOf = presenceFunctions.adminBackfillFriendsOf;
+exports.sendErrorReportDigest = errorReportFunctions.sendErrorReportDigest;
