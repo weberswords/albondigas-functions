@@ -11,8 +11,10 @@ const { adminFunction } = require('./admin');
 // deleted. A pending request, a block, an unfriend, or a deleted account
 // removes both directions. See albondigas docs/PRESENCE.md.
 
-// Characters Realtime Database doesn't allow in a key.
-const INVALID_KEY = /[.#$[\]/]/;
+// Characters Realtime Database doesn't allow in a key: . # $ [ ] / and
+// ASCII control characters, such as a newline pasted into a user ID.
+// eslint-disable-next-line no-control-regex
+const INVALID_KEY = /[.#$[\]/\u0000-\u001F\u007F]/;
 
 function isValidUid(uid) {
   return typeof uid === 'string' && uid.length > 0 && uid.length <= 128 && !INVALID_KEY.test(uid);
